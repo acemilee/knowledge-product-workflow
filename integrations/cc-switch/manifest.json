@@ -1,0 +1,18 @@
+{
+  "package": "knowledge-product-workflow",
+  "version": "1.1.5",
+  "mode": "host-driven",
+  "skills": [
+    {"name": "kp-create", "role": "root-orchestrator"},
+    {"name": "kp-product-strategist", "role": "product-strategy"},
+    {"name": "kp-curriculum-architect", "role": "curriculum"},
+    {"name": "kp-research-verifier", "role": "research-verification"},
+    {"name": "kp-chapter-writer", "role": "chapter-authoring"},
+    {"name": "kp-chinese-humanize-editor", "role": "chinese-copy-editing"},
+    {"name": "kp-diagram-designer", "role": "diagram-design"},
+    {"name": "kp-practice-designer", "role": "practice-design"},
+    {"name": "kp-quality-editor", "role": "quality-editing"},
+    {"name": "kp-independent-reviewer", "role": "independent-review"},
+    {"name": "kp-publisher", "role": "publishing"}
+  ]
+}

@@ -1,0 +1,7 @@
+---
+title: "{{book_title}}"
+format:
+  pdf: default
+---
+
+{{book_content}}

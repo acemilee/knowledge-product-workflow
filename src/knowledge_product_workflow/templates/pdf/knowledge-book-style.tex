@@ -1,0 +1,82 @@
+% knowledge-product-pdf-v4-style
+% Fixed reader-facing style for the a4-standard knowledge-product profile.
+\usepackage{xeCJK}
+\usepackage{fontspec}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{fvextra}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xurl}
+
+\definecolor{kpInk}{HTML}{202124}
+\definecolor{kpPaper}{HTML}{FFFCFA}
+\definecolor{kpBrand}{HTML}{C75D45}
+\definecolor{kpBrandSoft}{HTML}{F6EAE6}
+\definecolor{kpRule}{HTML}{DDD6D2}
+\definecolor{kpMuted}{HTML}{6B6B6B}
+
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{Consolas}
+\setCJKmainfont{Microsoft YaHei}
+\setCJKsansfont{Microsoft YaHei}
+\setCJKmonofont{Microsoft YaHei}
+\xeCJKsetup{CJKecglue = \hskip 0pt}
+\frenchspacing
+\linespread{1.32}\selectfont
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0pt}
+\renewcommand{\arraystretch}{1.28}
+\setlength{\tabcolsep}{4pt}
+\setlength{\emergencystretch}{3em}
+\Urlmuskip=0mu plus 1mu
+\setlength{\LTpre}{8pt}
+\setlength{\LTpost}{8pt}
+\captionsetup{font=small,labelfont={bf,color=kpMuted},textfont={color=kpMuted}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\small\color{kpMuted}\thepage}
+\fancyfoot[R]{\small\color{kpMuted}\KnowledgeProductFooterLabel}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+% report applies the plain style to chapter opening and TOC pages.
+\fancypagestyle{plain}{
+  \fancyhf{}
+  \fancyfoot[C]{\small\color{kpMuted}\thepage}
+  \fancyfoot[R]{\small\color{kpMuted}\KnowledgeProductFooterLabel}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0pt}
+}
+\renewcommand{\chaptermark}[1]{\markboth{#1}{}}
+\renewcommand{\sectionmark}[1]{\markright{#1}}
+
+\titleformat{\chapter}[hang]
+  {\normalfont\bfseries\color{kpInk}\fontsize{22}{30}\selectfont}
+  {\color{kpBrand}\thechapter}{0.8em}{}
+\titlespacing*{\chapter}{0pt}{0pt}{24pt}
+\titleformat{\section}
+  {\normalfont\bfseries\color{kpInk}\fontsize{15}{21}\selectfont}
+  {\color{kpBrand}\thesection}{0.7em}{}
+\titlespacing*{\section}{0pt}{22pt}{10pt}
+\titleformat{\subsection}
+  {\normalfont\bfseries\color{kpInk}\fontsize{12}{18}\selectfont}
+  {\color{kpBrand}\thesubsection}{0.6em}{}
+\titlespacing*{\subsection}{0pt}{16pt}{8pt}
+
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}
+  {commandchars=\\\{\},breaklines=true,breakanywhere=true,fontsize=\normalsize}
+\makeatletter
+\AtBeginDocument{%
+  \let\maketitle\relax
+  \hypersetup{colorlinks=true,linkcolor=kpBrand,urlcolor=kpBrand,citecolor=kpBrand}
+  \@ifundefined{Shaded}{}{%
+    \renewenvironment{Shaded}{\begin{KpCodeBox}}{\end{KpCodeBox}}%
+  }%
+}
+\makeatother

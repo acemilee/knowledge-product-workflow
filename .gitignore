@@ -1,0 +1,39 @@
+.venv/
+.pytest_cache/
+/.pytest-*/
+.ruff_cache/
+.cc-switch-isolated/
+.codex-app-server-schema/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+output/
+
+# Local credentials and certificates. Keep a redacted .env.example if one is needed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+/secrets/
+/credentials/
+
+# Local generated workspaces and internal development records.
+/book/
+/docs/superpowers/
+/IMPLEMENTATION_PLAN*.md
+/findings.md
+/progress.md
+/task_plan.md
+/ERROR_LOG.md
+/MEMO*.md
+/WORKFLOW_TEST_CASE.md
+
+# Project-local D2 deployment and installation records.
+/d2/
+
+# Local rendering previews and temporary build traces.
+/tmp/

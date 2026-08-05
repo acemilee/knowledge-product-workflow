@@ -1,0 +1,19 @@
+name: Feature request
+description: Propose a scoped improvement to the workflow, CLI, Skill package, or documentation.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the user problem instead of only prescribing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include workflow, quality, compatibility, or privacy implications when relevant.
+    validations:
+      required: true

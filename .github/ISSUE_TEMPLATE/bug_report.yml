@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible defect without publishing sensitive material.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请勿提交 API Key、客户书稿、个人路径、真实姓名、邮箱或其他敏感信息。安全问题请使用私密漏洞报告。
+  - type: input
+    id: version
+    attributes:
+      label: KP version
+      description: Run `kp --version` or provide the package version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use a sanitized temporary workspace and list exact steps.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

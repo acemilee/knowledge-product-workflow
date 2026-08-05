@@ -1,0 +1,7 @@
+module,skill,phase,output
+Knowledge Product,kp-brief,1-positioning,planning/product-brief.md
+Knowledge Product,kp-outline,2-curriculum,planning/curriculum-blueprint.md
+Knowledge Product,kp-research,3-research,research/source-ledger.jsonl
+Knowledge Product,kp-author,4-authoring,chapters/
+Knowledge Product,kp-validate,5-validation,delivery/qa-report.json
+Knowledge Product,kp-publish,6-publishing,delivery/delivery-manifest.yaml

@@ -1,0 +1,42 @@
+code: kp
+name: Knowledge Product Workflow
+header: Knowledge Product Workflow Module
+module_version: 1.1.5
+skill_package:
+  canonical_source: integrations/cc-switch
+  manifest: integrations/cc-switch/manifest.json
+  mode: host-driven
+  note: module/ 仅保留旧模块目录与目录索引；可部署 Skill 以 canonical_source 为准。
+artifacts:
+  planning: planning
+  research: research
+  chapters: chapters
+  delivery: delivery
+agents:
+  - code: kp-product-strategist
+    title: Product Strategist
+    description: Defines target learners, commercial positioning, and scope.
+  - code: kp-curriculum-architect
+    title: Curriculum Architect
+    description: Maps learning outcomes to a dependency-aware curriculum.
+  - code: kp-research-verifier
+    title: Research Verifier
+    description: Builds the source ledger and blocks unsupported claims.
+  - code: kp-chapter-writer
+    title: Chapter Writer
+    description: Drafts chapters from approved contracts and evidence packs.
+  - code: kp-chinese-humanize-editor
+    title: Chinese Humanize Editor
+    description: Edits Chinese tutorial prose without altering facts or protected fragments.
+  - code: kp-diagram-designer
+    title: Diagram Designer
+    description: Renders controlled D2 figures for reader-visible teaching relationships.
+  - code: kp-practice-designer
+    title: Practice Designer
+    description: Creates exercises, answer criteria, and executable examples.
+  - code: kp-quality-editor
+    title: Quality Editor
+    description: Runs fact, pedagogy, consistency, and rights gates.
+  - code: kp-publisher
+    title: Publisher
+    description: Assembles Markdown, renders PDF, and records delivery checksums.
