@@ -3,7 +3,7 @@ name: kp-create
 description: 从一个知识产品主题启动、继续或交付受控的中文知识产品工作流。协调专业 Skill、人工审批和受控 Markdown/PDF 交付时必须使用。
 user-invocable: true
 metadata:
-  version: "1.1.5"
+  version: "1.1.6"
   mode: host-driven
 ---
 

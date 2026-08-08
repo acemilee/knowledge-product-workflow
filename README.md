@@ -5,7 +5,7 @@
 
 面向中文知识产品的本地、文件驱动工作流。它将宿主 Agent 的自然语言协作与确定性 CLI 质量门分开：宿主负责理解需求、编排专业 Skill 与展示用户决策；`kp` CLI 负责工作区、版本绑定工件、质量校验和可审计交付。
 
-当前版本为 `1.1.5`。项目不保存 API Key，也不会自行调用任何 LLM API。
+当前版本为 `1.1.6`。项目不保存 API Key，也不会自行调用任何 LLM API。
 
 ## 适用场景
 
@@ -42,6 +42,16 @@ flowchart LR
 | 受控图表 | [D2](https://d2lang.com/) 与本机 Chromium、Chrome 或 Edge | 书稿包含流程、架构、时序等图表时 | [D2 安装说明](https://d2lang.com/tour/install/)；Windows 通常已包含 Edge |
 
 只交付 Markdown、且不需要受控图表时，仅安装 Python 3.13 和 uv 即可。Windows 是当前经过完整验证的平台；默认中文 PDF 使用 Windows 自带的微软雅黑，若系统没有该字体，请安装可用于 XeLaTeX 的中文字体后再运行诊断。其他平台的 CLI 路径可以运行，但尚未作为正式支持矩阵承诺。
+
+### Windows 中文输出乱码
+
+Python 3.13 在 Windows 上默认按 ANSI 代码页（GBK）编码标准输出，而 PowerShell 7 终端按 UTF-8 解码，会造成中文路径与消息乱码，遇到 GBK 无法表示的字符（如数学符号）还会直接报 `UnicodeEncodeError`。这不是项目缺陷，建议一次性设置（永久生效，新终端无需重复配置）：
+
+```powershell
+setx PYTHONUTF8 1
+```
+
+之后新开的终端与 Agent 会话不再乱码。`tests/conftest.py` 已为 pytest 输出与测试内子进程做 UTF-8 兜底。
 
 安装系统依赖后运行 `uv run kp doctor`。它会检查 Python 环境、Quarto、XeLaTeX、中文字体、D2 和图表浏览器，且不会下载、更新或修改任何系统工具。第三方工具不随本仓库打包，应由用户从上述官方入口自行安装。
 
@@ -117,6 +127,17 @@ uv lock --check
 ```
 
 新功能必须同时提交可重复运行的测试源码。不要提交 `.venv/`、`tmp/`、`output/`、本地书稿、渲染 PDF、运行日志、密钥或客户资料。
+
+### Skill 自检
+
+验证 Skill 提示词与控制面的一致性，不需要再在空上下文中人工模拟宿主：
+
+```powershell
+uv run pytest tests/test_skill_contract.py -v       # SKILL.md/手册 ↔ CLI 命令与选项契约
+uv run pytest tests/test_skill_self_check.py -v -s  # 宿主模拟黄金路径 + P0 恢复闭环（需 Quarto/XeLaTeX/D2）
+```
+
+`test_skill_contract.py` 随默认测试套件运行，零外部依赖，自动抓提示词引用了不存在的命令、拼错的选项或过时的 Skill 元数据。`test_skill_self_check.py` 在隔离工作区用真实 CLI 完成从 Brief 到交付的完整流程，并验证交付质量报告过期后的恢复工单闭环；需要本机 Quarto、XeLaTeX、中文字体（Windows 默认微软雅黑）、D2 与 Chrome/Edge（`kp doctor` 全绿）才运行，环境缺失时自动跳过，可设置 `KP_SELF_CHECK_REPORT_DIR` 输出自检报告。
 
 ## 文档
 

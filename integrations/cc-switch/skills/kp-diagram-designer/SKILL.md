@@ -3,7 +3,7 @@ name: kp-diagram-designer
 description: 将知识教程中的流程、架构、对比、时序和生命周期关系转化为受控 D2 图表资产并嵌入 PDF。
 user-invocable: true
 metadata:
-  version: "1.1.5"
+  version: "1.1.6"
 ---
 
 # KP Diagram Designer

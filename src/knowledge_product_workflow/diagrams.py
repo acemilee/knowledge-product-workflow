@@ -470,6 +470,12 @@ def create_diagram_template(
                 "source": _relative_path(workspace, source),
                 "controlled_reference": f"assets/figures/{diagram_id}.pdf",
                 "allowed_diagram_types": [item.value for item in DiagramType],
+                "submission_constraints": [
+                    "diagram_id 在同一章节内必须唯一；insert-diagram-reference 会拒绝重复引用。",
+                    "图注（caption）将进入中文终稿检查，并与图表资产版本绑定。",
+                    "不允许引用工作区外资产或绝对路径；D2 是唯一图表结构与 SVG 生成器。",
+                    "不使用 ASCII 字符画或无教学目的的装饰图；正文图表引用必须在终稿编辑前完成。",
+                ],
             },
             ensure_ascii=False,
             indent=2,

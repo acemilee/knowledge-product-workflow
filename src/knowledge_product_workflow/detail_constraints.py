@@ -70,11 +70,15 @@ _CONSTRAINT_VALUE_ALIASES = {
     "audience_level": {
         "入门": "beginner",
         "初学者": "beginner",
+        "初级": "beginner",
+        "初中级": "beginner",
         "beginner": "beginner",
         "进阶": "intermediate",
         "中级": "intermediate",
+        "中高级": "intermediate",
         "intermediate": "intermediate",
         "专家": "expert",
+        "高级": "expert",
         "expert": "expert",
     },
     "delivery_format": {
@@ -387,6 +391,28 @@ class ChapterSpec(BaseModel):
     required_units: list[str] = Field(min_length=1)
 
 
+# 中文 A4 固定版式（12pt、行距 1.32、16mm 边距）的保守字数估算：用于 Brief
+# 只有页数目标、没有字数额门时生成可写作的章节预算，避免正文写完才发现页数不达标。
+WORDS_PER_PAGE_ESTIMATE = 750
+
+
+def _effective_word_constraints(
+    constraints: DetailConstraints,
+) -> tuple[int | None, int | None, int | None]:
+    """返回 (word_min, word_target, word_max)；无字数额门但有页数写作目标时按页数估算。"""
+    if (
+        constraints.word_min is not None
+        or constraints.word_target is not None
+        or constraints.word_max is not None
+    ):
+        return constraints.word_min, constraints.word_target, constraints.word_max
+    pages = constraints.production_page_target
+    if pages is None:
+        return None, None, None
+    target = pages * WORDS_PER_PAGE_ESTIMATE
+    return round(target * 0.8), target, round(target * 1.25)
+
+
 def _allocate_total(total: int | None, weights: list[float]) -> list[int | None]:
     if total is None:
         return [None] * len(weights)
@@ -424,9 +450,10 @@ def allocate_budgets(
     if len(set(numbers)) != len(numbers):
         raise ValueError("章节编号必须唯一")
     weights = [float(spec.weight) for spec in chapter_specs]
-    word_minimums = _allocate_total(constraints.word_min, weights)
-    word_targets = _allocate_total(constraints.word_target, weights)
-    word_maximums = _allocate_total(constraints.word_max, weights)
+    word_minimum, word_target_value, word_maximum = _effective_word_constraints(constraints)
+    word_minimums = _allocate_total(word_minimum, weights)
+    word_targets = _allocate_total(word_target_value, weights)
+    word_maximums = _allocate_total(word_maximum, weights)
     page_targets = _allocate_total(constraints.production_page_target, weights)
     return [
         ChapterBudget(

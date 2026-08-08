@@ -28,7 +28,7 @@ uv run kp brief "AI Agent 应用开发" --workspace output/ai-agent-foundations 
   --no-interactive --target-words 30000-50000 --audience-level 专家 --delivery-format 两者 --confirm
 ```
 
-也可使用字段可乱序、拒绝未知字段的 JSON/YAML。宿主必须把输入写入 `<workspace>/runs/brief-input.json`，并使用绝对路径：`kp brief "<主题>" --workspace <workspace> --from <workspace-absolute>/runs/brief-input.json`。命令位置参数已提供主题时，JSON 可省略 `topic`；如果两处都提供，必须完全一致。`target_pages` 和 `target_words` 均支持精确值或 `最小-最大` 区间。输入文件中的 `topic`、`language`、`layout_profile`、`audience_level`、`delivery_format` 支持中文显示值；宿主以相同输入加 `--confirm` 物化可审阅 Brief，再向用户展示并收集一次自然语言决定。`--confirm` 是后台物化动作，不是要求用户学习的确认命令。交互式 `kp brief` 检测到重定向 stdin 会立即失败，不能用多行管道“喂答案”。
+也可使用字段可乱序、拒绝未知字段的 JSON/YAML。宿主必须把输入写入 `<workspace>/runs/brief-input.json`，并使用绝对路径：`kp brief "<主题>" --workspace <workspace> --from <workspace-absolute>/runs/brief-input.json`。命令位置参数已提供主题时，JSON 可省略 `topic`；如果两处都提供，必须完全一致。`target_pages` 和 `target_words` 均支持精确值或 `最小-最大` 区间。输入文件中的 `topic`、`language`、`layout_profile`、`delivery_format` 支持中文显示值，`audience_level` 支持固定中文别名映射（入门/初学者/初级/初中级→beginner，进阶/中级/中高级→intermediate，专家/高级→expert，详见 `detail_constraints.py` 的 `_CONSTRAINT_VALUE_ALIASES`）；宿主以相同输入加 `--confirm` 物化可审阅 Brief，再向用户展示并收集一次自然语言决定。`--confirm` 是后台物化动作，不是要求用户学习的确认命令。交互式 `kp brief` 检测到重定向 stdin 会立即失败，不能用多行管道“喂答案”。
 
 任何中断后的恢复都先执行：
 

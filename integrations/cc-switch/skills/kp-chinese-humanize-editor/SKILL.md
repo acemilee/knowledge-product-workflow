@@ -3,7 +3,7 @@ name: kp-chinese-humanize-editor
 description: 对中文专业教程执行终稿文字编辑，去除机械 AI 文风并保留事实、数字、代码、链接和教学契约。
 user-invocable: true
 metadata:
-  version: "1.1.5"
+  version: "1.1.6"
 ---
 
 # KP Chinese Humanize Editor

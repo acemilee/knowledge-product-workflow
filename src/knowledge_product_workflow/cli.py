@@ -130,6 +130,7 @@ from knowledge_product_workflow.workflows.curriculum import (
     create_section_outline_migration_draft,
     create_teaching_length_recommendation_template,
     curriculum_outline_schema,
+    parse_chapter_budgets,
     submit_curriculum_blueprint,
     submit_teaching_length_recommendation,
 )
@@ -935,7 +936,14 @@ def brief(
                 copyright_line=copyright_line,
             )
         except (TypeError, ValidationError, ValueError) as error:
-            typer.echo(f"Brief 输入无效：{error}", err=True)
+            if isinstance(error, ValidationError) and "audience_level" in str(error):
+                typer.echo(
+                    "Brief 输入无效：受众级别不支持该写法；支持：入门/初学者/初级/初中级"
+                    "（beginner）、进阶/中级/中高级（intermediate）、专家/高级（expert）。",
+                    err=True,
+                )
+            else:
+                typer.echo(f"Brief 输入无效：{error}", err=True)
             raise typer.Exit(code=2) from error
         except typer.Abort:
             raise
@@ -983,7 +991,14 @@ def brief(
                 copyright_line=copyright_line,
             )
         except (TypeError, ValidationError, ValueError) as error:
-            typer.echo(f"Brief 输入无效：{error}", err=True)
+            if isinstance(error, ValidationError) and "audience_level" in str(error):
+                typer.echo(
+                    "Brief 输入无效：受众级别不支持该写法；支持：入门/初学者/初级/初中级"
+                    "（beginner）、进阶/中级/中高级（intermediate）、专家/高级（expert）。",
+                    err=True,
+                )
+            else:
+                typer.echo(f"Brief 输入无效：{error}", err=True)
             raise typer.Exit(code=2) from error
         _ensure_approval_identity(opened_workspace, False)
         requirement_sources = _brief_requirement_sources(
@@ -1057,7 +1072,11 @@ def status(
     if json_output:
         payload = snapshot.model_dump(mode="json")
         payload["effective_constraints"] = _status_effective_constraints(opened_workspace)
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+        # 宿主在 workspace 内操作，绝对路径只是噪音 token；统一替换为占位符。
+        # 注意 JSON 转义：路径中的反斜杠在输出里是双反斜杠，需先转义再替换。
+        escaped_root = str(opened_workspace.root).replace("\\", "\\\\")
+        typer.echo(rendered.replace(escaped_root, "<workspace>"))
         return
     typer.echo(_render_workflow_status(snapshot))
 
@@ -1107,7 +1126,9 @@ def orchestration_plan(
         "status": inspect_workflow(opened_workspace).model_dump(mode="json"),
     }
     if json_output:
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+        escaped_root = str(opened_workspace.root).replace("\\", "\\\\")
+        typer.echo(rendered.replace(escaped_root, "<workspace>"))
         return
     typer.echo(f"已创建或复用编排工单：{payload['work_order_path']}")
     typer.echo(_render_workflow_status(inspect_workflow(opened_workspace)))
@@ -1534,6 +1555,7 @@ def submit_outline(
         work_order_id=action_work_order_id,
     )
     typer.echo(f"已提交课程蓝图：{output}；等待用户审批。")
+    _echo_estimated_budget_warning(opened_workspace)
 
 
 @zh_command("amend-outline")
@@ -1551,6 +1573,31 @@ def amend_outline(
     supersede_orchestration_work_orders(opened_workspace, "已提交课程蓝图修订")
     create_orchestration_work_order(opened_workspace)
     typer.echo(f"已提交课程蓝图修订：{output}；等待用户审批后重新派生章节合约。")
+    _echo_estimated_budget_warning(opened_workspace)
+
+
+def _echo_estimated_budget_warning(workspace: Workspace) -> None:
+    """Brief 无字数额门但已按页数目标估算章节预算时，提示宿主对照预算写作。"""
+    brief_path = workspace.root / "planning" / "product-brief.md"
+    blueprint_path = workspace.root / "planning" / "curriculum-blueprint.md"
+    if not (brief_path.is_file() and blueprint_path.is_file()):
+        return
+    try:
+        _, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+        _, blueprint_body = parse_markdown_artifact(blueprint_path.read_text(encoding="utf-8"))
+        constraints = parse_detail_constraints(brief_body)
+        if constraints is None or constraints.word_min is not None:
+            return
+        budgets = parse_chapter_budgets(blueprint_body)
+    except (TypeError, ValueError, OSError):
+        return
+    total_min = sum(budget.word_min or 0 for budget in budgets.values())
+    if total_min > 0:
+        typer.echo(
+            f"提示：Brief 未设置字数额门，已按页数目标估算章节预算（全书约 {total_min} 字下限）。"
+            "写作时请对照章节合约的 word 预算，避免交付阶段页数不达标。",
+            err=True,
+        )
 
 
 @zh_command("outline-migration-draft")

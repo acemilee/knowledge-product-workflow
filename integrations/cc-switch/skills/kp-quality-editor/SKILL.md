@@ -3,7 +3,7 @@ name: kp-quality-editor
 description: 执行确定性内容质量校验、汇总可执行修订项，并阻断不合格书稿；审稿批次仅用于用户主动请求的诊断。
 user-invocable: true
 metadata:
-  version: "1.1.5"
+  version: "1.1.6"
 ---
 
 # KP Quality Editor

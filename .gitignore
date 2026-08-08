@@ -37,3 +37,6 @@ output/
 
 # Local rendering previews and temporary build traces.
 /tmp/
+
+# Agent session tool state (Reasonix working files, not project content).
+/.reasonix/

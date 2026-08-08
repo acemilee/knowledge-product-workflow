@@ -3,7 +3,7 @@ name: kp-publisher
 description: 受控汇编、渲染、验证并发布知识产品 Markdown/PDF，保留可审计交付清单。
 user-invocable: true
 metadata:
-  version: "1.1.5"
+  version: "1.1.6"
 ---
 
 # KP Publisher

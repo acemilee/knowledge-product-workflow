@@ -249,6 +249,16 @@ def _template_schema_comments() -> str:
         "# 教学单元公开契约：完整机器可读清单请运行 kp outline-schema。",
         "# required_units 可省略或填写 []；提交时会按章节体裁补入默认必需单元。",
         "# 若显式填写 required_units/optional_units/prohibited_units，只能使用下列英文标识。",
+        "#",
+        "# 提交前必须满足的绑定规则（违反会在 kp submit-outline 报错，请勿踩坑）：",
+        "# - topic / target_audience / audience_level 必须与已批准 Brief 完全一致；本模板已预填，请勿改动。",
+        "# - Brief 声明页数目标时，必须先由 kp-curriculum-architect 提交教学篇幅评估",
+        "#   （kp submit-length-recommendation），否则 kp submit-outline 会拒绝。",
+        "# - 若用户页数超过教学建议上限，必须在本蓝图顶层填写 scope_expansion_units（非重复的新教学单元），",
+        "#   否则会以“不能以重复内容填充”拒绝。",
+        "# - 每章 weight 决定按教学权重的章节预算分配；Brief 只给页数时，CLI 会按页数估算字数额门。",
+        "# - 本章 word 预算（word_min/word_target/word_max）由 CLI 按 weight 派生并写入章节合约，",
+        "#   正文写作须对照该预算，避免交付阶段页数不达标。",
     ]
     for archetype in ChapterArchetype:
         payload = archetypes[archetype.value]
@@ -714,6 +724,22 @@ def _write_curriculum_blueprint(
         for chapter in submission.chapters
     ]
     budgets = allocate_budgets(chapter_specs, constraints) if constraints is not None else []
+    if (
+        constraints is not None
+        and constraints.word_min is None
+        and constraints.production_page_target is not None
+        and budgets
+        and budgets[0].word_min is not None
+    ):
+        workspace.append_event(
+            "word_budget_estimated",
+            {
+                "estimated_word_min": sum(budget.word_min or 0 for budget in budgets),
+                "estimated_word_target": sum(budget.word_target or 0 for budget in budgets),
+                "estimated_word_max": sum(budget.word_max or 0 for budget in budgets),
+                "pages": constraints.production_page_target,
+            },
+        )
     artifact = ArtifactMetadata(
         book_id=workspace.root.name,
         artifact_type="curriculum_blueprint",
@@ -884,7 +910,9 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
         raise CurriculumPrerequisiteError("生成课程蓝图模板前必须先批准产品 Brief")
     output = workspace.root / "planning" / "curriculum-blueprint.template.yaml"
     if output.exists():
-        raise FileExistsError(f"课程蓝图提交模板已存在：{output}")
+        raise FileExistsError(
+            f"课程蓝图提交模板已存在：{output}；如需修订请使用 kp amend-outline --from <修订蓝图>，禁止删除后重建。"
+        )
     constraints = parse_detail_constraints(brief_body)
     payload = {
         "schema_version": 2,
