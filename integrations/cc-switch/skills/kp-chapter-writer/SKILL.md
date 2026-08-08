@@ -3,7 +3,7 @@ name: kp-chapter-writer
 description: 依据已批准章节合约和证据边界撰写读者可见的知识产品章节。
 user-invocable: true
 metadata:
-  version: "1.1.5"
+  version: "1.1.6"
 ---
 
 # KP Chapter Writer
@@ -37,6 +37,12 @@ metadata:
 6. 函数、类、参数、变量、CLI 命令、文件路径、配置键和值、代码标识符必须用单反引号标注为行内代码，例如 `get_orders(user_id)`、`--workspace`、`runs/events.jsonl`。普通概念、完整句子和宣传性短语不得滥用反引号；长代码仍使用带语言标识的代码块。
 7. 插图仅引用当前书稿 `assets/` 中由受控工作流生成的 PDF、PNG、JPG/JPEG；SVG 必须先转换，且不得为凑页数添加无教学意义的图片。流程、架构、对比、时序或生命周期关系先交给 `kp-diagram-designer`，使用“图表模板 -> 受控引用 -> 终稿编辑 -> 提交图表”的 D2 链路，不保留 ASCII 字符画。
 8. 图表引用写入后，将最终章节源稿交给 `kp-chinese-humanize-editor`，运行 `kp humanize-check`；随后提交图表资产（有图表时），再由 `kp-quality-editor` 运行章节合规模板并提交章节。合规模板上下文中的 `expected_section_outline` 是只读真源，作者不得填写编号或标题结构字段；正文作者不得计算或填写正文/合约哈希。
+
+## 篇幅预算
+
+- 正文按章节合约的 `word_min`/`word_target`/`word_max` 写作，先达到目标字数，再校验收束；不得为凑字数复制段落或堆叠同义内容。
+- Brief 只声明页数目标、没有字数额门时，CLI 会按页数估算章节预算（`kp submit-outline` 会提示"已按页数目标估算章节预算"）；此时以估算预算为写作锚点，避免交付阶段页数不达标返工。
+- 预算与页数目标明显冲突（例如合约预算写不满目标页数）时，先回 `kp-curriculum-architect` 修订篇幅评估或蓝图，不得自行放宽预算、改小节结构或增删合约内容。
 
 ## 禁止事项
 

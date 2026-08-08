@@ -3,7 +3,7 @@ name: kp-independent-reviewer
 description: 审阅不可变章节快照、按教学与面试 Rubric 评分，并通过受控命令提交版本绑定的审稿结果。
 user-invocable: false
 metadata:
-  version: "1.1.5"
+  version: "1.1.6"
   mode: host-skill
   review-evidence: snapshot-bound
 ---

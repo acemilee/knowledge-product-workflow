@@ -1,6 +1,6 @@
 {
   "package": "knowledge-product-workflow",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "mode": "host-driven",
   "skills": [
     {"name": "kp-create", "role": "root-orchestrator"},

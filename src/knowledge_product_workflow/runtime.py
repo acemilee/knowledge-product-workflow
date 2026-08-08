@@ -988,9 +988,14 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
     constraints = parse_detail_constraints(_artifact_body(brief))
     requires_pdf = constraints.requires_pdf if constraints is not None else True
     if artifacts["planning/curriculum-blueprint.md"] == "missing":
+        recommendation_ready = (workspace.root / "planning" / "teaching-length-recommendation.yaml").is_file()
+        if recommendation_ready:
+            blocked_by = ["教学篇幅评估已提交，等待主题化课程蓝图"]
+        else:
+            blocked_by = ["缺少课程蓝图：planning/curriculum-blueprint.md"]
         return _status(
             stage="blueprint_missing",
-            blocked_by=["缺少课程蓝图：planning/curriculum-blueprint.md"],
+            blocked_by=blocked_by,
             recommended_skill="kp-curriculum-architect",
             next_command=(
                 f'kp outline --workspace "{workspace_arg}"，由 kp-curriculum-architect 填写主题化 YAML 后，'
@@ -1463,6 +1468,25 @@ _COMMAND_STAGES: dict[str, frozenset[str]] = {
 }
 
 
+def _delivery_blocker_details(workspace: Workspace) -> str:
+    """交付质量报告的 blocker 摘要；报告缺失或不可解析时给出通用说明。"""
+    report_path = workspace.root / "delivery" / "qa-report.json"
+    if not report_path.is_file():
+        return "交付质量报告缺失"
+    try:
+        report = QualityReport.model_validate_json(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "交付质量报告无法解析"
+    blockers = [finding for finding in report.findings if finding.severity.value == "blocker"]
+    if not blockers:
+        return "交付质量报告不包含 blocker finding"
+    parts = []
+    for finding in blockers[:3]:
+        message = " ".join(finding.message.strip().split())
+        parts.append(f"{finding.code}：{message[:80]}")
+    return "；".join(parts)
+
+
 def authorize_command(workspace: Workspace, command: str) -> WorkflowStatus:
     """Authorize a state-changing delivery command against persisted workflow state."""
     if command not in _COMMAND_STAGES:
@@ -1470,6 +1494,12 @@ def authorize_command(workspace: Workspace, command: str) -> WorkflowStatus:
     authorize_workflow_transition(workspace, command)
     status = inspect_workflow(workspace)
     if status.stage not in _COMMAND_STAGES[command]:
+        if command == "publish" and status.stage == "delivery_quality_blocked":
+            raise WorkflowAuthorizationError(
+                f"最终交付质量门未通过，不能发布：{_delivery_blocker_details(workspace)}。"
+                "请修复内容性原因（调整 Brief 页数目标或扩展/精简正文）后重新运行 "
+                "kp validate-delivery；重复运行 validate-delivery 不会改变内容性 blocker。"
+            )
         raise WorkflowAuthorizationError(
             f"当前工作流阶段不允许运行 kp {command}；请先执行：{status.next_command}"
         )

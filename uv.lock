@@ -40,7 +40,7 @@ wheels = [
 
 [[package]]
 name = "knowledge-product-workflow"
-version = "1.1.5"
+version = "1.1.6"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
