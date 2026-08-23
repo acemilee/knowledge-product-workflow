@@ -32,11 +32,13 @@ foreach ($resource in $sharedResources) {
         throw "Missing shared resource: $relativePath"
     }
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    $stream = [System.IO.File]::OpenRead($resourcePath)
     try {
-        $actualHash = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        # Hash canonical UTF-8/LF bytes so the manifest is stable across Windows and Unix checkouts.
+        $content = [System.IO.File]::ReadAllText($resourcePath, [System.Text.Encoding]::UTF8)
+        $canonical = $content.Replace("`r`n", "`n").Replace("`r", "`n")
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        $actualHash = ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
     } finally {
-        $stream.Dispose()
         $sha256.Dispose()
     }
     if ($actualHash -ne $expectedHash.ToLowerInvariant()) {

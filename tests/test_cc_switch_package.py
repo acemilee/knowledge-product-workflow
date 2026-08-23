@@ -14,6 +14,11 @@ def _manifest() -> dict[str, object]:
     return json.loads((PACKAGE_ROOT / "manifest.json").read_text(encoding="utf-8"))
 
 
+def _canonical_resource_bytes(path: Path) -> bytes:
+    """Hash text resources independently of the checkout's newline policy."""
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
 def test_cc_switch_package_has_one_root_and_twelve_specialists() -> None:
     manifest = _manifest()
     skills = manifest["skills"]
@@ -60,7 +65,7 @@ def test_package_manifest_hash_binds_shared_resources_and_skill_references() -> 
     for resource in resources:
         path = PACKAGE_ROOT / resource["path"]
         assert path.is_file()
-        assert resource["sha256"] == sha256(path.read_bytes()).hexdigest()
+        assert resource["sha256"] == sha256(_canonical_resource_bytes(path)).hexdigest()
 
     reference_pattern = re.compile(r"`(?P<path>(?:\.\./)+references/[^`]+)`")
     for entry in manifest["skills"]:
