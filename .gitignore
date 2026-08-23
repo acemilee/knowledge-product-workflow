@@ -31,6 +31,8 @@ output/
 /ERROR_LOG.md
 /MEMO*.md
 /WORKFLOW_TEST_CASE.md
+/AGENTS.md
+/kp-skills-improvement-handoff.md
 
 # Project-local D2 deployment and installation records.
 /d2/

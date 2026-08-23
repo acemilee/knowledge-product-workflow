@@ -1,7 +1,7 @@
 code: kp
 name: Knowledge Product Workflow
 header: Knowledge Product Workflow Module
-module_version: 1.1.5
+module_version: 1.1.6
 skill_package:
   canonical_source: integrations/cc-switch
   manifest: integrations/cc-switch/manifest.json
