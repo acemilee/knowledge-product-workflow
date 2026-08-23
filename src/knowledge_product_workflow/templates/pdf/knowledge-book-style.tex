@@ -13,12 +13,12 @@
 \usepackage{array}
 \usepackage{xurl}
 
-\definecolor{kpInk}{HTML}{202124}
-\definecolor{kpPaper}{HTML}{FFFCFA}
-\definecolor{kpBrand}{HTML}{C75D45}
-\definecolor{kpBrandSoft}{HTML}{F6EAE6}
-\definecolor{kpRule}{HTML}{DDD6D2}
-\definecolor{kpMuted}{HTML}{6B6B6B}
+\definecolor{kpInk}{HTML}{\KnowledgeProductInkHex}
+\definecolor{kpPaper}{HTML}{\KnowledgeProductPaperHex}
+\definecolor{kpBrand}{HTML}{\KnowledgeProductAccentHex}
+\definecolor{kpBrandSoft}{HTML}{\KnowledgeProductAccentSoftHex}
+\definecolor{kpRule}{HTML}{\KnowledgeProductRuleHex}
+\definecolor{kpMuted}{HTML}{\KnowledgeProductMutedHex}
 
 \setmainfont{TeX Gyre Termes}
 \setsansfont{TeX Gyre Heros}
@@ -28,9 +28,9 @@
 \setCJKmonofont{Microsoft YaHei}
 \xeCJKsetup{CJKecglue = \hskip 0pt}
 \frenchspacing
-\linespread{1.32}\selectfont
+\linespread{\KnowledgeProductLineSpread}\selectfont
 \setlength{\parindent}{2em}
-\setlength{\parskip}{0pt}
+\setlength{\parskip}{\KnowledgeProductParagraphSkip}
 \renewcommand{\arraystretch}{1.28}
 \setlength{\tabcolsep}{4pt}
 \setlength{\emergencystretch}{3em}
@@ -41,6 +41,7 @@
 
 \pagestyle{fancy}
 \fancyhf{}
+\fancyhead[L]{\small\color{kpMuted}\KnowledgeProductRunningHeader}
 \fancyfoot[C]{\small\color{kpMuted}\thepage}
 \fancyfoot[R]{\small\color{kpMuted}\KnowledgeProductFooterLabel}
 \renewcommand{\headrulewidth}{0pt}
@@ -57,11 +58,11 @@
 \renewcommand{\sectionmark}[1]{\markright{#1}}
 
 \titleformat{\chapter}[hang]
-  {\normalfont\bfseries\color{kpInk}\fontsize{22}{30}\selectfont}
+  {\normalfont\bfseries\color{kpInk}\fontsize{\KnowledgeProductChapterSize}{\KnowledgeProductChapterLeading}\selectfont}
   {\color{kpBrand}\thechapter}{0.8em}{}
 \titlespacing*{\chapter}{0pt}{0pt}{24pt}
 \titleformat{\section}
-  {\normalfont\bfseries\color{kpInk}\fontsize{15}{21}\selectfont}
+  {\normalfont\bfseries\color{kpInk}\fontsize{\KnowledgeProductSectionSize}{\KnowledgeProductSectionLeading}\selectfont}
   {\color{kpBrand}\thesection}{0.7em}{}
 \titlespacing*{\section}{0pt}{22pt}{10pt}
 \titleformat{\subsection}

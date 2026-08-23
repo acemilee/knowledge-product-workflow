@@ -1,6 +1,8 @@
 import json
+import re
 import shutil
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,12 @@ def _manifest() -> dict[str, object]:
     return json.loads((PACKAGE_ROOT / "manifest.json").read_text(encoding="utf-8"))
 
 
-def test_cc_switch_package_has_one_root_and_ten_specialists() -> None:
+def _canonical_resource_bytes(path: Path) -> bytes:
+    """Hash text resources independently of the checkout's newline policy."""
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
+def test_cc_switch_package_has_one_root_and_twelve_specialists() -> None:
     manifest = _manifest()
     skills = manifest["skills"]
     assert isinstance(skills, list)
@@ -20,9 +27,11 @@ def test_cc_switch_package_has_one_root_and_ten_specialists() -> None:
     assert names == [
         "kp-create",
         "kp-product-strategist",
+        "kp-publication-designer",
         "kp-curriculum-architect",
         "kp-research-verifier",
         "kp-chapter-writer",
+        "kp-developmental-editor",
         "kp-chinese-humanize-editor",
         "kp-diagram-designer",
         "kp-practice-designer",
@@ -46,6 +55,23 @@ def test_every_skill_declares_a_complete_operational_contract() -> None:
             "下游交接条件",
         ):
             assert heading in content
+
+
+def test_package_manifest_hash_binds_shared_resources_and_skill_references() -> None:
+    manifest = _manifest()
+    resources = manifest["shared_resources"]
+    assert isinstance(resources, list)
+    assert resources
+    for resource in resources:
+        path = PACKAGE_ROOT / resource["path"]
+        assert path.is_file()
+        assert resource["sha256"] == sha256(_canonical_resource_bytes(path)).hexdigest()
+
+    reference_pattern = re.compile(r"`(?P<path>(?:\.\./)+references/[^`]+)`")
+    for entry in manifest["skills"]:
+        skill_path = PACKAGE_ROOT / "skills" / entry["name"] / "SKILL.md"
+        for match in reference_pattern.finditer(skill_path.read_text(encoding="utf-8")):
+            assert (skill_path.parent / match.group("path")).resolve().is_file()
 
 
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="需要 PowerShell 验证 CC Switch 安装器")
@@ -77,6 +103,35 @@ def test_install_package_includes_the_shared_orchestration_contract(tmp_path: Pa
     assert (destination.parent / "references" / "orchestration-contract.md").read_bytes() == contract.read_bytes()
     for entry in _manifest()["skills"]:
         assert (destination / entry["name"] / "SKILL.md").is_file()
+
+
+@pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="需要 PowerShell 验证 Skill 包完整性")
+def test_package_verifier_rejects_a_tampered_shared_resource(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    shutil.copytree(PACKAGE_ROOT, package)
+    resource = package / "references" / "orchestration-contract.md"
+    resource.write_text("tampered\n", encoding="utf-8")
+    verifier = package / "scripts" / "verify-cc-switch-package.ps1"
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(verifier),
+            "-PackageRoot",
+            str(package),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode != 0
+    assert "hash mismatch" in completed.stderr.lower()
 
 
 def test_every_skill_metadata_version_matches_the_package_version() -> None:

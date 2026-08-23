@@ -160,6 +160,16 @@ uv run kp review-check --workspace output/ai-agent-foundations
 
 ### 章节合规与图表的受控提交
 
+v1.2 的新书在 Brief 出版设计预览确认后会启用内容计划与发展性编辑。它们不增加用户审批点：章节作者在自己的租约内按“内容计划 -> 初稿 -> 图表/练习 -> 发展性编辑 -> 中文终稿 -> 合规提交”推进。内容计划必须覆盖已批准 `section_outline`，并只在确实降低理解成本时要求表、图或工作表；发展性编辑报告与正文、合约、内容计划绑定，任一变化后必须重做。普通用户不执行以下内部命令：
+
+```powershell
+uv run kp content-plan-template 1 --workspace output/ai-agent-foundations
+uv run kp submit-content-plan 1 --workspace output/ai-agent-foundations --from output/ai-agent-foundations/runs/content-plan.yaml
+uv run kp developmental-check 1 --workspace output/ai-agent-foundations --from output/ai-agent-foundations/runs/chapter-01-source.md
+```
+
+宿主模型调用前后还必须通过内部 token 预算账本预约和记录 usage；默认 `lean` 模式只对样章和确定性门标记章节运行发展性编辑。输入 SHA 未变化时复用已完成结果，预算达到预警线不启动可选动作，达到上限或重试上限时停止并向用户说明范围/预算选择。
+
 模型不得填写 SHA-256、章节号、内部 Schema、资产路径或内部清单。所有输入和源稿均必须位于当前书稿工作区。图表先由作者确定其教学目的，再执行受控顺序：
 
 ```powershell

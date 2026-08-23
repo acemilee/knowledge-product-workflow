@@ -9,7 +9,7 @@ _FENCE_START = re.compile(r"^\s*:::\s*\{(?P<attributes>[^}]*)\}\s*$")
 _DIV_CLASS = re.compile(r"\.([A-Za-z][A-Za-z0-9_-]*)")
 _LEGACY_MARKER = re.compile(r"^\s*\{\.(?P<component>kp-[A-Za-z][A-Za-z0-9_-]*)\}\s*$")
 _HEADING = re.compile(r"^#{1,6}\s+")
-_INTERNAL_MARKER = re.compile(r"\{\.kp-(?:source|key-takeaway|practice|note)\}")
+_INTERNAL_MARKER = re.compile(r"\{\.kp-(?:source|key-takeaway|practice|note|decision|procedure|worksheet)\}")
 _FENCE = re.compile(r"^\s*:::")
 
 CALLOUT_LABELS = {
@@ -17,6 +17,9 @@ CALLOUT_LABELS = {
     "kp-key-takeaway": "本章要点",
     "kp-practice": "练习",
     "kp-source": "来源",
+    "kp-decision": "决策要点",
+    "kp-procedure": "操作步骤",
+    "kp-worksheet": "工作表",
 }
 SUPPORTED_CALLOUTS = frozenset(CALLOUT_LABELS)
 

@@ -20,7 +20,9 @@
 
 ## 正文所有权
 
-- 同一章节同一时刻只有一个 `kp-chapter-writer` 正文租约。练习、图表和中文终稿均是该作者工作单内的条件动作，不可独立抢占或并行改写章节正文。
+- 同一章节同一时刻只有一个 `kp-chapter-writer` 正文租约。内容块计划、发展性编辑、练习、图表和中文终稿均是该作者工作单内的条件动作，不可独立抢占或并行改写章节正文。v5 书稿按“内容计划 -> 初稿 -> 发展性编辑 -> 图表/练习 -> 中文终稿 -> 合规提交”执行；旧 v4 书稿不被强制迁移。
+- 出版设计是 Brief 的附属预览，由 `kp-publication-designer` 一书一次生成并与 Brief 同次确认。它只能写受控 token；`kp-publisher` 是唯一消费 token 并写入 QMD/TeX/Lua 派生物的 Skill。
+- 宿主模型调用前必须获得 token 预算授权，调用后记录真实 usage 或明确估算。输入 SHA 未变化时复用缓存；达到预警线不启动可选动作，达到预算或重试上限立即停止自动运行意图。
 - 研究 Skill 只写证据与假设边界；它完成后必须用 `kp record-research-impact` 记录 `no_product_change`、`packaging_change`、`content_change` 或 `unverified`。只有 `content_change` 回到 Brief/蓝图审批与合约重编译。
 - 质量编辑只校验、提出修订请求和写入受控合规/质量工件；不得改写章节散文。发布 Skill 只写派生交付物；不得改写正文。
 

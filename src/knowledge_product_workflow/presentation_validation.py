@@ -16,7 +16,10 @@ _DIV_CLASS = re.compile(r"\.([A-Za-z][A-Za-z0-9_-]*)")
 _RAW_TEX = re.compile(r"\\(?:begin|end|input|includegraphics|newcommand|usepackage)\b")
 _RAW_HTML = re.compile(r"<\s*/?\s*(?:div|span|script|style|table|img)\b", re.IGNORECASE)
 _SUPPORTED_ASSET_EXTENSIONS = frozenset({".pdf", ".png", ".jpg", ".jpeg"})
-_SUPPORTED_COMPONENTS = frozenset({"kp-source", "kp-key-takeaway", "kp-practice", "kp-note"})
+_SUPPORTED_COMPONENTS = frozenset(
+    {"kp-source", "kp-key-takeaway", "kp-practice", "kp-note", "kp-decision", "kp-procedure", "kp-worksheet"}
+)
+_WORKSHEET_LABELS = ("使用说明", "输入", "输出示例", "复盘")
 
 
 def _finding(code: str, location: str, line_number: int, message: str) -> QualityFinding:
@@ -109,6 +112,18 @@ def validate_presentation_markdown(
                             "来源卡片必须包含读者可见的 HTTPS 超链接标题。",
                         )
                     )
+                if "kp-worksheet" in frame["classes"]:
+                    contents = "\n".join(frame["content"])
+                    missing = [label for label in _WORKSHEET_LABELS if label not in contents]
+                    if missing:
+                        findings.append(
+                            _finding(
+                                "PRESENTATION_WORKSHEET_INVALID",
+                                location,
+                                int(frame["line"]),
+                                f"工作表缺少必要字段：{', '.join(missing)}。",
+                            )
+                        )
             continue
         div_start = _DIV_START.match(raw_line)
         if div_start is not None:
@@ -127,8 +142,11 @@ def validate_presentation_markdown(
                         f"未定义的读者组件：{', '.join(unknown)}。",
                     )
                 )
-            open_divs.append({"line": line_number, "classes": classes, "has_link": False})
+            open_divs.append({"line": line_number, "classes": classes, "has_link": False, "content": []})
             continue
+
+        for frame in open_divs:
+            frame["content"].append(raw_line)
 
         if _RAW_TEX.search(raw_line):
             findings.append(

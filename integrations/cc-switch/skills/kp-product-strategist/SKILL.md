@@ -3,7 +3,7 @@ name: kp-product-strategist
 description: 定义可销售知识产品的读者、承诺、边界与 Brief，并在人工审批前阻止课程生成。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
 ---
 
 # KP Product Strategist

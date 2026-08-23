@@ -73,7 +73,7 @@ def test_quarto_source_binds_the_complete_brand_visual_contract(tmp_path: Path) 
 
     qmd = qmd_path.read_text(encoding="utf-8")
     delivery = workspace.root / "delivery"
-    assert "knowledge-product-pdf-v4" in qmd
+    assert PRESENTATION_PROFILE_ID in qmd
     assert "knowledge-book-cover.tex" in qmd
     assert "knowledge-book-style.tex" in qmd
     assert "knowledge-book-toc.tex" in qmd

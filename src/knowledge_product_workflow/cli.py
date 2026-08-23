@@ -25,12 +25,21 @@ from knowledge_product_workflow.chapter_compliance import (
     submit_chapter,
 )
 from knowledge_product_workflow.claims import current_claim_contract_bindings
+from knowledge_product_workflow.content_plan import (
+    ContentPlanError,
+    create_content_plan_template,
+    submit_content_plan,
+)
 from knowledge_product_workflow.d2 import resolve_d2, resolve_diagram_browser
 from knowledge_product_workflow.detail_constraints import (
     DetailConstraints,
     normalize_localized_constraints,
     parse_page_budget,
     parse_word_budget,
+)
+from knowledge_product_workflow.developmental import (
+    DevelopmentalEditError,
+    record_developmental_check,
 )
 from knowledge_product_workflow.diagrams import (
     DiagramSubmissionError,
@@ -104,6 +113,16 @@ from knowledge_product_workflow.runtime import (
 )
 from knowledge_product_workflow.source_ledger import SourceLedgerEntry, append_source_entry
 from knowledge_product_workflow.state_machine import transition
+from knowledge_product_workflow.token_budget import (
+    TokenBudgetActionRequest,
+    TokenBudgetExceededError,
+    TokenMode,
+    complete_model_action,
+    fail_model_action,
+    freeze_token_budget,
+    load_token_budget,
+    preflight_model_action,
+)
 from knowledge_product_workflow.user_decisions import (
     UserDecisionTarget,
     UserResponseDecision,
@@ -643,6 +662,20 @@ def _load_publication_update(path: Path) -> PublicationUpdateInput:
         return PublicationUpdateInput.model_validate(raw)
     except ValidationError as error:
         raise ValueError(f"出版信息更新字段无效：{error}") from error
+
+
+def _load_token_budget_action_request(path: Path) -> TokenBudgetActionRequest:
+    try:
+        source = path.read_text(encoding="utf-8")
+        raw = json.loads(source) if path.suffix.lower() == ".json" else yaml.safe_load(source)
+    except (OSError, json.JSONDecodeError, yaml.YAMLError) as error:
+        raise ValueError(f"无法读取 token 模型动作输入文件：{error}") from error
+    if not isinstance(raw, dict):
+        raise TypeError("token 模型动作输入文件必须是 JSON 或 YAML 对象。")
+    try:
+        return TokenBudgetActionRequest.model_validate(raw)
+    except ValidationError as error:
+        raise ValueError(f"token 模型动作输入字段无效：{error}") from error
 
 
 def _load_controlled_exception_submission(path: Path) -> ControlledExceptionSubmissionInput:
@@ -1482,6 +1515,108 @@ def update_publication(
     )
 
 
+@zh_command("freeze-token-budget")
+def freeze_token_budget_command(
+    workspace: WorkspacePath,
+    mode: Annotated[TokenMode, typer.Option(help="已确认的成本模式")] = TokenMode.LEAN,
+    book_limit_tokens: Annotated[int | None, typer.Option(help="全书 token 上限，可选")] = None,
+    chapter_limit_tokens: Annotated[int | None, typer.Option(help="单章 token 上限，可选")] = None,
+    action_limit_tokens: Annotated[int | None, typer.Option(help="单次模型动作 token 上限，可选")] = None,
+) -> None:
+    """内部：在正文批量生产前冻结模型调用成本边界。"""
+    try:
+        budget = freeze_token_budget(
+            _open_workspace(workspace),
+            mode=mode,
+            book_limit_tokens=book_limit_tokens,
+            chapter_limit_tokens=chapter_limit_tokens,
+            action_limit_tokens=action_limit_tokens,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法冻结 token 预算：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        json.dumps(
+            {
+                "mode": budget.mode.value,
+                "book_limit_tokens": budget.book_limit_tokens,
+                "chapter_limit_tokens": budget.chapter_limit_tokens,
+                "action_limit_tokens": budget.action_limit_tokens,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+@zh_command("token-preflight")
+def token_preflight_command(
+    workspace: WorkspacePath,
+    input_path: Annotated[Path, typer.Option("--from", help="模型动作预算 JSON 或 YAML 输入")],
+) -> None:
+    """内部：在宿主调用模型前预约 token 预算或返回 SHA 缓存命中。"""
+    opened_workspace = _open_workspace(workspace)
+    try:
+        request = _load_token_budget_action_request(
+            _workspace_input_path(opened_workspace, input_path, label="token 模型动作输入")
+        )
+        result = preflight_model_action(opened_workspace, request)
+    except (FileNotFoundError, TokenBudgetExceededError, ValueError) as error:
+        typer.echo(f"无法预约 token 模型动作：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(result.model_dump_json())
+
+
+@zh_command("complete-token-action")
+def complete_token_action_command(
+    action_id: Annotated[str, typer.Argument(help="token 预算动作标识")],
+    workspace: WorkspacePath,
+    input_tokens: Annotated[int, typer.Option(help="宿主报告或保守估算的输入 token")],
+    output_tokens: Annotated[int, typer.Option(help="宿主报告或保守估算的输出 token")],
+    usage_source: Annotated[str, typer.Option(help="actual、estimated 或 unavailable")],
+) -> None:
+    """内部：写入已完成模型动作的真实或显式估算 usage。"""
+    if usage_source not in {"actual", "estimated", "unavailable"}:
+        typer.echo("无法完成 token 模型动作：usage_source 只能是 actual、estimated 或 unavailable。", err=True)
+        raise typer.Exit(code=1)
+    try:
+        action = complete_model_action(
+            _open_workspace(workspace),
+            action_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage_source=usage_source,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法完成 token 模型动作：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(action.model_dump_json())
+
+
+@zh_command("fail-token-action")
+def fail_token_action_command(
+    action_id: Annotated[str, typer.Argument(help="token 预算动作标识")],
+    workspace: WorkspacePath,
+) -> None:
+    """内部：标记失败模型动作，为唯一允许的重试保留审计证据。"""
+    try:
+        action = fail_model_action(_open_workspace(workspace), action_id)
+    except (FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法标记 token 模型动作失败：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(action.model_dump_json())
+
+
+@zh_command("token-budget-status")
+def token_budget_status_command(workspace: WorkspacePath) -> None:
+    """内部：读取已冻结 token 预算与当前用量，不触发模型调用。"""
+    try:
+        budget = load_token_budget(_open_workspace(workspace))
+    except (FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法读取 token 预算：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(budget.model_dump_json())
+
+
 @zh_command("controlled-exception-schema")
 def controlled_exception_schema_command() -> None:
     """输出受控例外的语义输入 Schema；不要求填写 SHA-256。"""
@@ -1801,6 +1936,59 @@ def humanize_check(
         typer.echo(f"无法完成中文终稿编辑校验：{error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"已写入中文终稿编辑报告：{output}；阻断项={len(report.findings)}")
+    if report.findings:
+        raise typer.Exit(code=1)
+
+
+@zh_command("content-plan-template")
+def content_plan_template_command(chapter_number: int, workspace: WorkspacePath) -> None:
+    """生成当前章节的内容块计划模板与只读小节上下文。"""
+    try:
+        template, context = create_content_plan_template(_open_workspace(workspace), chapter_number)
+    except (ContentPlanError, FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法生成章节内容计划模板：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(f"已生成章节内容计划模板：{template}；当前上下文：{context}")
+
+
+@zh_command("submit-content-plan")
+def submit_content_plan_command(
+    chapter_number: int,
+    workspace: WorkspacePath,
+    input_path: Annotated[Path, typer.Option("--from", help="章节内容计划 YAML 输入")],
+) -> None:
+    """提交绑定当前章节合约的内容块计划，不接受内部哈希字段。"""
+    opened_workspace = _open_workspace(workspace)
+    try:
+        output = submit_content_plan(
+            opened_workspace,
+            chapter_number,
+            _workspace_input_path(opened_workspace, input_path, label="章节内容计划输入"),
+        )
+    except (ContentPlanError, FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法提交章节内容计划：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(f"已提交章节内容计划：{output}")
+
+
+@zh_command("developmental-check")
+def developmental_check_command(
+    chapter_number: int,
+    workspace: WorkspacePath,
+    source_path: Annotated[Path, typer.Option("--from", help="章节初稿 Markdown 文件")],
+) -> None:
+    """运行版本绑定的发展性编辑检查；它不直接改写正文。"""
+    try:
+        output, report = record_developmental_check(
+            _open_workspace(workspace), chapter_number, source_path
+        )
+    except (DevelopmentalEditError, FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法完成发展性编辑检查：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    if output is None or report is None:
+        typer.echo("当前旧版出版配置不要求发展性编辑报告。")
+        return
+    typer.echo(f"已写入发展性编辑报告：{output}；阻断项={len(report.findings)}")
     if report.findings:
         raise typer.Exit(code=1)
 

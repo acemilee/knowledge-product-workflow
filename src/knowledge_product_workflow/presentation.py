@@ -6,6 +6,7 @@ import os
 import re
 import uuid
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
@@ -14,12 +15,91 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from knowledge_product_workflow.workspace import Workspace
 
-PRESENTATION_PROFILE_ID = "knowledge-product-pdf-v4"
+LEGACY_PRESENTATION_PROFILE_ID = "knowledge-product-pdf-v4"
+PRESENTATION_PROFILE_ID = "knowledge-product-pdf-v5"
 PUBLICATION_PROFILE_FILENAME = "publication-profile.yaml"
 PUBLICATION_METADATA_FILENAME = "publication-metadata.yaml"
 PUBLICATION_UPDATE_PREVIEW_FILENAME = "publication-update-preview.json"
 _SEMVER = re.compile(r"^v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
 _SUPPORTED_BODY_FONT_SIZES = frozenset({12, 14})
+_HEX_COLOR = re.compile(r"^[0-9A-F]{6}$")
+
+
+class DesignFamily(StrEnum):
+    """Finite reader-facing visual systems supported by the PDF renderer."""
+
+    EDITORIAL_GUIDE = "editorial-guide"
+    FIELD_PLAYBOOK = "field-playbook"
+    TECHNICAL_MANUAL = "technical-manual"
+
+
+class PublicationPalette(BaseModel):
+    """Safe colour tokens consumed by fixed TeX templates, never raw TeX."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ink: str = "202124"
+    paper: str = "FFFCFA"
+    accent: str = "C75D45"
+    accent_soft: str = "F6EAE6"
+    muted: str = "6B6B6B"
+    rule: str = "DDD6D2"
+
+    @field_validator("ink", "paper", "accent", "accent_soft", "muted", "rule")
+    @classmethod
+    def require_safe_hex(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if _HEX_COLOR.fullmatch(normalized) is None:
+            raise ValueError("颜色必须是 6 位 RGB HEX，不允许 TeX、CSS 或其他控制文本。")
+        return normalized
+
+
+_DESIGN_DEFAULTS: dict[DesignFamily, dict[str, object]] = {
+    DesignFamily.TECHNICAL_MANUAL: {
+        "palette": PublicationPalette(),
+        "heading_scale": "standard",
+        "line_length": "standard",
+        "paragraph_spacing": "compact",
+        "running_header_mode": "section",
+        "chapter_opener_mode": "structured",
+        "component_emphasis": "balanced",
+        "source_presentation": "inline",
+    },
+    DesignFamily.EDITORIAL_GUIDE: {
+        "palette": PublicationPalette(
+            ink="24312D", paper="FFFDF8", accent="2B6F6D", accent_soft="E6F2F0", muted="59615B", rule="D6DFDA"
+        ),
+        "heading_scale": "generous",
+        "line_length": "compact",
+        "paragraph_spacing": "relaxed",
+        "running_header_mode": "chapter",
+        "chapter_opener_mode": "editorial",
+        "component_emphasis": "subtle",
+        "source_presentation": "inline",
+    },
+    DesignFamily.FIELD_PLAYBOOK: {
+        "palette": PublicationPalette(
+            ink="243B53", paper="FFFCF7", accent="B76E32", accent_soft="F7EBDD", muted="5E6268", rule="E0D2C1"
+        ),
+        "heading_scale": "standard",
+        "line_length": "standard",
+        "paragraph_spacing": "relaxed",
+        "running_header_mode": "section",
+        "chapter_opener_mode": "practical",
+        "component_emphasis": "balanced",
+        "source_presentation": "card",
+    },
+}
+
+
+def _contrast_ratio(left: str, right: str) -> float:
+    def luminance(value: str) -> float:
+        components = [int(value[index : index + 2], 16) / 255 for index in range(0, 6, 2)]
+        converted = [component / 12.92 if component <= 0.04045 else ((component + 0.055) / 1.055) ** 2.4 for component in components]
+        return 0.2126 * converted[0] + 0.7152 * converted[1] + 0.0722 * converted[2]
+
+    first, second = luminance(left), luminance(right)
+    return (max(first, second) + 0.05) / (min(first, second) + 0.05)
 
 
 class PresentationOverrides(BaseModel):
@@ -56,7 +136,7 @@ class PublicationProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = Field(default=1, ge=1)
+    schema_version: int = Field(default=2, ge=1)
     profile_id: str = PRESENTATION_PROFILE_ID
     revision: int = Field(default=1, ge=1)
     subtitle: str = Field(min_length=1, max_length=180)
@@ -66,8 +146,47 @@ class PublicationProfile(BaseModel):
     edition_label: str = Field(min_length=1, max_length=80)
     publication_date: date
     body_font_size: int = 12
+    reading_context: str = Field(default="专业知识阅读", min_length=1, max_length=80)
+    product_promise: str = Field(default="可执行的专业知识指导", min_length=1, max_length=160)
+    visual_direction: str = Field(default="清晰、克制、以阅读任务为中心", min_length=1, max_length=120)
+    design_family: DesignFamily = DesignFamily.TECHNICAL_MANUAL
+    palette: PublicationPalette = Field(default_factory=PublicationPalette)
+    heading_scale: Literal["compact", "standard", "generous"] = "standard"
+    line_length: Literal["compact", "standard"] = "standard"
+    paragraph_spacing: Literal["compact", "relaxed"] = "compact"
+    running_header_mode: Literal["none", "chapter", "section"] = "section"
+    chapter_opener_mode: Literal["structured", "editorial", "practical"] = "structured"
+    component_emphasis: Literal["subtle", "balanced"] = "balanced"
+    source_presentation: Literal["inline", "card"] = "inline"
+    content_contract_enabled: bool = False
 
-    @field_validator("subtitle", "cover_label", "footer_label", "copyright_line", "edition_label")
+    @model_validator(mode="before")
+    @classmethod
+    def seed_design_defaults(cls, raw: object) -> object:
+        if not isinstance(raw, dict):
+            return raw
+        values = dict(raw)
+        profile_id = values.get("profile_id", PRESENTATION_PROFILE_ID)
+        schema_version = values.get("schema_version", 2)
+        if profile_id == LEGACY_PRESENTATION_PROFILE_ID or schema_version == 1:
+            return values
+        family = DesignFamily(values.get("design_family", DesignFamily.TECHNICAL_MANUAL))
+        values.setdefault("schema_version", 2)
+        values.setdefault("profile_id", PRESENTATION_PROFILE_ID)
+        for field, value in _DESIGN_DEFAULTS[family].items():
+            values.setdefault(field, value)
+        return values
+
+    @field_validator(
+        "subtitle",
+        "cover_label",
+        "footer_label",
+        "copyright_line",
+        "edition_label",
+        "reading_context",
+        "product_promise",
+        "visual_direction",
+    )
     @classmethod
     def normalize_required_text(cls, value: str, info) -> str:
         cleaned = value.strip()
@@ -75,19 +194,24 @@ class PublicationProfile(BaseModel):
             raise ValueError(f"{info.field_name} 不能为空")
         return cleaned
 
-    @field_validator("profile_id")
-    @classmethod
-    def require_supported_profile(cls, value: str) -> str:
-        if value != PRESENTATION_PROFILE_ID:
-            raise ValueError(f"不支持的出版视觉配置：{value}")
-        return value
-
     @field_validator("body_font_size")
     @classmethod
     def require_supported_body_font_size(cls, value: int) -> int:
         if value not in _SUPPORTED_BODY_FONT_SIZES:
             raise ValueError("body_font_size 当前仅支持 12 或 14。")
         return value
+
+    @model_validator(mode="after")
+    def require_supported_profile_and_contrast(self) -> PublicationProfile:
+        if self.profile_id == LEGACY_PRESENTATION_PROFILE_ID and self.schema_version == 1:
+            return self
+        if self.profile_id != PRESENTATION_PROFILE_ID or self.schema_version != 2:
+            raise ValueError(f"不支持的出版视觉配置：{self.profile_id}/v{self.schema_version}")
+        if _contrast_ratio(self.palette.ink, self.palette.paper) < 4.5:
+            raise ValueError("正文颜色与纸色对比度不足，无法保证可读性。")
+        if _contrast_ratio(self.palette.accent, self.palette.paper) < 3.0:
+            raise ValueError("强调色与纸色对比度不足，无法保证导航可读性。")
+        return self
 
 
 class PublicationMetadata(BaseModel):
@@ -106,6 +230,16 @@ class PublicationMetadata(BaseModel):
     footer_label: str = Field(min_length=1, max_length=100)
     copyright_line: str = Field(min_length=1, max_length=180)
     body_font_size: int
+    design_family: DesignFamily = DesignFamily.TECHNICAL_MANUAL
+    palette: PublicationPalette = Field(default_factory=PublicationPalette)
+    heading_scale: Literal["compact", "standard", "generous"] = "standard"
+    line_length: Literal["compact", "standard"] = "standard"
+    paragraph_spacing: Literal["compact", "relaxed"] = "compact"
+    running_header_mode: Literal["none", "chapter", "section"] = "section"
+    chapter_opener_mode: Literal["structured", "editorial", "practical"] = "structured"
+    component_emphasis: Literal["subtle", "balanced"] = "balanced"
+    source_presentation: Literal["inline", "card"] = "inline"
+    content_contract_enabled: bool = False
 
     @field_validator(
         "profile_id",
@@ -154,9 +288,31 @@ class PublicationUpdateInput(BaseModel):
     body_font_size: int | None = None
     edition_label: str | None = Field(default=None, max_length=80)
     publication_date: date | None = None
+    reading_context: str | None = Field(default=None, max_length=80)
+    product_promise: str | None = Field(default=None, max_length=160)
+    visual_direction: str | None = Field(default=None, max_length=120)
+    design_family: DesignFamily | None = None
+    palette: PublicationPalette | None = None
+    heading_scale: Literal["compact", "standard", "generous"] | None = None
+    line_length: Literal["compact", "standard"] | None = None
+    paragraph_spacing: Literal["compact", "relaxed"] | None = None
+    running_header_mode: Literal["none", "chapter", "section"] | None = None
+    chapter_opener_mode: Literal["structured", "editorial", "practical"] | None = None
+    component_emphasis: Literal["subtle", "balanced"] | None = None
+    source_presentation: Literal["inline", "card"] | None = None
+    content_contract_enabled: bool | None = None
     version_bump: Literal["patch", "minor", "major", "none"]
 
-    @field_validator("subtitle", "cover_label", "footer_label", "copyright_line", "edition_label")
+    @field_validator(
+        "subtitle",
+        "cover_label",
+        "footer_label",
+        "copyright_line",
+        "edition_label",
+        "reading_context",
+        "product_promise",
+        "visual_direction",
+    )
     @classmethod
     def normalize_optional_text(cls, value: str | None, info) -> str | None:
         if value is None:
@@ -354,6 +510,15 @@ def preview_publication_update(
     current = load_or_create_publication_profile(workspace, language=language, overrides=overrides)
     path = publication_profile_path(workspace)
     values = current.model_dump(mode="python")
+    if current.profile_id == LEGACY_PRESENTATION_PROFILE_ID:
+        values["schema_version"] = 2
+        values["profile_id"] = PRESENTATION_PROFILE_ID
+        for field, value in _DESIGN_DEFAULTS[DesignFamily.TECHNICAL_MANUAL].items():
+            values[field] = value
+    if update.design_family is not None and update.palette is None:
+        for field, value in _DESIGN_DEFAULTS[update.design_family].items():
+            values[field] = value
+        values["content_contract_enabled"] = True
     for field in (
         "subtitle",
         "cover_label",
@@ -362,6 +527,18 @@ def preview_publication_update(
         "edition_label",
         "publication_date",
         "body_font_size",
+        "reading_context",
+        "product_promise",
+        "visual_direction",
+        "design_family",
+        "palette",
+        "heading_scale",
+        "line_length",
+        "paragraph_spacing",
+        "running_header_mode",
+        "chapter_opener_mode",
+        "component_emphasis",
+        "source_presentation",
     ):
         value = getattr(update, field)
         if value is not None:
@@ -466,6 +643,16 @@ def load_or_create_publication_metadata(
         footer_label=profile.footer_label,
         copyright_line=profile.copyright_line,
         body_font_size=profile.body_font_size,
+        design_family=profile.design_family,
+        palette=profile.palette,
+        heading_scale=profile.heading_scale,
+        line_length=profile.line_length,
+        paragraph_spacing=profile.paragraph_spacing,
+        running_header_mode=profile.running_header_mode,
+        chapter_opener_mode=profile.chapter_opener_mode,
+        component_emphasis=profile.component_emphasis,
+        source_presentation=profile.source_presentation,
+        content_contract_enabled=profile.content_contract_enabled,
     )
     path = publication_metadata_path(workspace)
     payload = yaml.safe_dump(metadata.model_dump(mode="json"), allow_unicode=True, sort_keys=False)

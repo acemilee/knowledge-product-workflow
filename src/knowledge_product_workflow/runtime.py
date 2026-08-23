@@ -1508,6 +1508,11 @@ def authorize_command(workspace: Workspace, command: str) -> WorkflowStatus:
 
 _SKILL_SCOPES: dict[str, tuple[list[str], list[str], list[str]]] = {
     "kp-product-strategist": (["planning/"], ["planning/product-brief.md"], ["planning/product-brief.md"]),
+    "kp-publication-designer": (
+        ["planning/", "runs/"],
+        ["runs/publication-design/"],
+        ["runs/publication-design/preview.json"],
+    ),
     "kp-curriculum-architect": (
         ["planning/", "chapters/"],
         ["planning/curriculum-blueprint.md", "chapters/"],
@@ -1522,6 +1527,11 @@ _SKILL_SCOPES: dict[str, tuple[list[str], list[str], list[str]]] = {
         ["planning/", "research/", "chapters/"],
         ["chapters/"],
         ["chapters/chapter-XX-contract.md", "chapters/chapter-XX.md"],
+    ),
+    "kp-developmental-editor": (
+        ["planning/", "chapters/", "runs/"],
+        ["runs/editorial/"],
+        ["runs/editorial/chapter-XX-developmental-report.json"],
     ),
     "kp-chinese-humanize-editor": (
         ["planning/", "chapters/", "research/", "assets/"],

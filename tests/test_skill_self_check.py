@@ -173,8 +173,6 @@ def _write_chapter_source(workspace: Workspace) -> Path:
     source.write_text(
         """# 1. 决策树分类器的最小验证闭环
 
-决策树的价值不在于背出一串分裂准则，而在于把一次分类判断拆成可以检查的步骤：选择候选特征、比较切分后样本的不确定性，再用未参与训练的数据检验结果。下面只保留这个闭环所需的最小部件。
-
 ## 1.1 熵如何帮助选择切分
 
 二分类样本中，标签越混杂，当前节点越不确定。设正类比例为 $p$，信息熵写作：
@@ -183,7 +181,7 @@ $$
 H(p) = -p\\log_2p - (1-p)\\log_2(1-p)
 $$
 
-候选切分不是追求让某一侧样本数量最少，而是比较切分前后的加权熵。信息增益 $IG$ 越大，说明这次切分减少的不确定性越多。以“是否完成实名认证”为特征时，若已认证用户大多还款、未认证用户更分散，那么这个特征值得进入候选集；它仍不是因果解释，也不能替代业务审查。
+候选切分比较的是加权熵是否下降。信息增益 $IG$ 越大，说明这次切分减少的不确定性越多；它仍不是因果解释。
 
 | 节点样本 | 正类比例 | 熵的直观含义 | 下一步 |
 | --- | ---: | --- | --- |
@@ -195,27 +193,37 @@ $$
 
 ## 1.2 从特征阈值到递归训练
 
-训练过程在每个节点重复同一件事：枚举可用特征和阈值，选择信息增益最大的切分，然后在子节点继续。生产系统还要处理缺失值、类别编码和样本漂移；最小实验先把这些边界写清楚，避免把代码运行成功误当作模型可靠。
+训练过程选择信息增益最大的切分，再在子节点继续。最小实验先固定数据切分，避免把代码运行成功误当作模型可靠。
 
 ```python
-from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 
-x_train, x_valid, y_train, y_valid = train_test_split(
-    features, labels, test_size=0.25, random_state=7, stratify=labels
-)
-model = DecisionTreeClassifier(max_depth=3, min_samples_leaf=10, random_state=7)
+model = DecisionTreeClassifier(max_depth=3, random_state=7)
 model.fit(x_train, y_train)
 print(model.score(x_valid, y_valid))
 ```
 
-这里的 `stratify=labels` 用于保持两部分数据的类别比例接近。若类别极不平衡，仅看 `score()` 容易掩盖少数类的错误，应同时检查混淆矩阵和业务代价。
+若类别极不平衡，仅看 `score()` 容易掩盖少数类的错误，应补充混淆矩阵。
 
 ## 1.3 用验证集判断是否过拟合
 
-同一模型在训练集上越来越高的准确率，不能证明它在新样本上也有效。一个实用的检查是同时记录训练集和验证集指标：两者都低时优先检查特征与数据质量；训练集很高、验证集明显较低时，优先限制树深、提高叶节点最小样本数，或收集更多代表性数据。
+训练集很高、验证集明显较低时，优先限制树深或补充代表性数据；两者都低时先检查特征与数据质量。
 
-流程图把这条判断链固定下来。它关注的是每次实验应留下什么证据，而不是替读者给出一个脱离数据集的“标准分数”。完成实验后，保存随机种子、数据切分方式和验证指标，下一次才能比较模型变化来自参数还是来自数据。
+流程图固定每次实验应留下的证据：数据切分、参数和验证指标。
+
+::: {.kp-worksheet}
+使用说明：填写一次训练与验证结果。
+
+输入：`max_depth`、随机种子和数据切分方式。
+
+| 配置 | 训练指标 | 验证指标 | 判断 |
+| --- | ---: | ---: | --- |
+| 深度 3 | 填写 | 填写 | 填写 |
+
+输出示例：验证指标明显较低，先限制复杂度再补充数据。
+
+复盘提示：下一次实验只改变一个变量。
+:::
 """,
         encoding="utf-8",
     )
@@ -246,6 +254,43 @@ def _write_diagram_input(workspace: Workspace) -> Path:
     return path
 
 
+def _write_content_plan(workspace: Workspace) -> Path:
+    payload = {
+        "sections": [
+            {
+                "section_id": "1.1",
+                "reader_job": "根据熵下降判断一次切分是否值得保留。",
+                "opening_mode": "claim",
+                "block_sequence": ["explanation", "table"],
+                "artifact": "切分比较表",
+                "asset_decision": "table",
+                "asset_rationale": "表格能比较节点标签状态和下一步动作。",
+            },
+            {
+                "section_id": "1.2",
+                "reader_job": "完成一次训练与验证记录。",
+                "opening_mode": "procedure",
+                "block_sequence": ["explanation", "example"],
+                "artifact": "none",
+                "asset_decision": "none",
+                "asset_rationale": "代码示例直接说明最小训练记录。",
+            },
+            {
+                "section_id": "1.3",
+                "reader_job": "识别过拟合信号并复盘下一次实验。",
+                "opening_mode": "decision",
+                "block_sequence": ["explanation", "worksheet", "diagram"],
+                "artifact": "验证记录工作表",
+                "asset_decision": "worksheet",
+                "asset_rationale": "工作表让读者记录指标与下一步变量。",
+            },
+        ]
+    }
+    path = workspace.root / "runs" / "content-plan.yaml"
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path
+
+
 def _write_compliance_input(workspace: Workspace) -> Path:
     payload = {
         "learning_objective_anchors": {
@@ -271,6 +316,15 @@ def _run_golden_path(tmp_path: Path) -> Workspace:
     _invoke(runner, ["brief", "--workspace", str(workspace.root), "--from", str(brief_input), "--confirm"])
     _decide_and_approve(runner, workspace.root, "brief", workspace.root / "planning" / "product-brief.md")
 
+    publication = workspace.root / "runs" / "publication-update.yaml"
+    publication.write_text(
+        "design_family: technical-manual\nreading_context: 课后实验与屏幕阅读\nversion_bump: none\n",
+        encoding="utf-8",
+    )
+    _invoke(runner, ["update-publication", "--workspace", str(workspace.root), "--from", str(publication)])
+    _invoke(runner, ["update-publication", "--workspace", str(workspace.root), "--from", str(publication), "--confirm"])
+    _invoke(runner, ["freeze-token-budget", "--workspace", str(workspace.root), "--mode", "lean"])
+
     _invoke(runner, ["length-recommendation-template", "--workspace", str(workspace.root)])
     recommendation = _write_length_recommendation(workspace)
     _invoke(runner, ["submit-length-recommendation", "--workspace", str(workspace.root), "--from", str(recommendation)])
@@ -282,6 +336,9 @@ def _run_golden_path(tmp_path: Path) -> Workspace:
     _invoke(runner, ["compile-contracts", "--all", "--workspace", str(workspace.root)])
     _invoke(runner, ["draft", "1", "--workspace", str(workspace.root)])
     chapter_source = _write_chapter_source(workspace)
+    _invoke(runner, ["content-plan-template", "1", "--workspace", str(workspace.root)])
+    content_plan = _write_content_plan(workspace)
+    _invoke(runner, ["submit-content-plan", "1", "--workspace", str(workspace.root), "--from", str(content_plan)])
     _invoke(
         runner,
         [
@@ -310,7 +367,6 @@ def _run_golden_path(tmp_path: Path) -> Workspace:
             str(diagram_input),
         ],
     )
-    _invoke(runner, ["humanize-check", "1", "--workspace", str(workspace.root), "--from", str(chapter_source)])
     _invoke(
         runner,
         [
@@ -324,6 +380,8 @@ def _run_golden_path(tmp_path: Path) -> Workspace:
             str(chapter_source),
         ],
     )
+    _invoke(runner, ["developmental-check", "1", "--workspace", str(workspace.root), "--from", str(chapter_source)])
+    _invoke(runner, ["humanize-check", "1", "--workspace", str(workspace.root), "--from", str(chapter_source)])
     _invoke(
         runner,
         ["chapter-compliance-template", "1", "--workspace", str(workspace.root), "--from", str(chapter_source)],
@@ -448,6 +506,10 @@ def test_host_simulation_golden_path_and_p0_recovery(tmp_path: Path) -> None:
         "delivery_report_publishable": report.publishable,
         "reader_content_has_no_internal_leak": not forbidden,
         "pdf_pages_within_target": pages == EXPECTED_PDF_PAGES,
+        "v5_publication_profile": "knowledge-product-pdf-v5" in (workspace.root / "delivery" / "publication-metadata.yaml").read_text(encoding="utf-8"),
+        "content_plan_bound": (workspace.root / "chapters" / "chapter-01-content-plan.yaml").is_file(),
+        "developmental_report_bound": (workspace.root / "runs" / "editorial" / "chapter-01-developmental-report.json").is_file(),
+        "preview_manifest_bound": (workspace.root / "runs" / "pdf-preview" / "preview-manifest.json").is_file(),
     }
     assert all(checks.values()), json.dumps(
         {

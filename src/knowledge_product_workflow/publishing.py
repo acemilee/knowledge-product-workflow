@@ -26,7 +26,9 @@ from knowledge_product_workflow.detail_constraints import DetailConstraints
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
 from knowledge_product_workflow.localization import QMD_MISSING, QUARTO_UNAVAILABLE
 from knowledge_product_workflow.models import ArtifactStatus
+from knowledge_product_workflow.pdf_preview import render_pdf_preview_set
 from knowledge_product_workflow.presentation import (
+    LEGACY_PRESENTATION_PROFILE_ID,
     PRESENTATION_PROFILE_ID,
     PUBLICATION_METADATA_FILENAME,
     PublicationMetadata,
@@ -47,7 +49,7 @@ _PDF_COVER_FILE = "knowledge-book-cover.tex"
 _PDF_TOC_FILE = "knowledge-book-toc.tex"
 _PDF_COMPONENTS_FILE = "knowledge-book-components.tex"
 _PDF_COMPONENTS_FILTER_FILE = "knowledge-book-components.lua"
-_PDF_PROFILE = "knowledge-product-pdf-v4"
+_PDF_PROFILE = PRESENTATION_PROFILE_ID
 _PDF_STYLE_MARKER = "% knowledge-product-pdf-v4-style"
 _PDF_COVER_MARKER = "% knowledge-product-pdf-v4-cover"
 _PDF_TOC_MARKER = "% knowledge-product-pdf-v4-toc"
@@ -82,13 +84,12 @@ _PDF_CHINESE_STYLE_MARKERS = (
     _PDF_COMPONENTS_FILE,
     "filters:",
     _PDF_COMPONENTS_FILTER_FILE,
-    _PDF_PROFILE,
 )
 _TITLE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _TEX_DOCUMENTCLASS = re.compile(
     r"\\documentclass(?:\[(?P<options>[^\]]*)\])?\{(?P<documentclass>[^}]+)\}"
 )
-_PDF_COMPONENT_LEAK = re.compile(r"\{\.kp-(?:source|key-takeaway|practice|note)\}")
+_PDF_COMPONENT_LEAK = re.compile(r"\{\.kp-(?:source|key-takeaway|practice|note|decision|procedure|worksheet)\}")
 _TEX_ESCAPE = str.maketrans(
     {
         "\\": r"\textbackslash{}",
@@ -218,6 +219,8 @@ def _book_input_paths(workspace: Workspace, chapter_paths: list[Path], markdown:
                 workspace.root / "chapters" / f"chapter-{number:02d}-contract.md",
                 workspace.root / "runs" / "chapter-compliance" / f"chapter-{number:02d}.json",
                 workspace.root / "runs" / "humanize" / f"chapter-{number:02d}.json",
+                workspace.root / "runs" / "editorial" / f"chapter-{number:02d}-developmental-report.json",
+                workspace.root / "chapters" / f"chapter-{number:02d}-content-plan.yaml",
             )
         )
     paths.extend(_reader_asset_paths(workspace, markdown))
@@ -227,7 +230,16 @@ def _book_input_paths(workspace: Workspace, chapter_paths: list[Path], markdown:
 def _build_book_input_manifest(
     workspace: Workspace, chapter_paths: list[Path], markdown: str, qmd_path: Path
 ) -> BookInputManifest:
+    metadata_path = workspace.root / "delivery" / PUBLICATION_METADATA_FILENAME
+    try:
+        metadata = PublicationMetadata.model_validate(
+            yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+        )
+        profile_id = metadata.profile_id
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        profile_id = _PDF_PROFILE
     return BookInputManifest(
+        pdf_profile=profile_id,
         inputs=[
             HashedArtifact(path=_relative(workspace, path), sha256=_sha256(path))
             for path in _book_input_paths(workspace, chapter_paths, markdown, qmd_path)
@@ -425,11 +437,59 @@ def _template_text(filename: str) -> str:
     return asset.read_text(encoding="utf-8")
 
 
+def _style_token_prefix(metadata: PublicationMetadata) -> str:
+    palette = metadata.palette
+    if metadata.heading_scale == "compact":
+        chapter_size, chapter_leading, section_size, section_leading = (20, 28, 14, 20)
+    elif metadata.heading_scale == "generous":
+        chapter_size, chapter_leading, section_size, section_leading = (24, 32, 16, 22)
+    else:
+        chapter_size, chapter_leading, section_size, section_leading = (22, 30, 15, 21)
+    paragraph_skip = "4pt" if metadata.paragraph_spacing == "relaxed" else "0pt"
+    line_spread = "1.40" if metadata.paragraph_spacing == "relaxed" else "1.32"
+    running_header = {
+        "none": "",
+        "chapter": r"\nouppercase{\leftmark}",
+        "section": r"\nouppercase{\rightmark}",
+    }[metadata.running_header_mode]
+    key_frame = "kpRule" if metadata.component_emphasis == "subtle" else "kpBrand"
+    source_frame = "kpRule" if metadata.source_presentation == "inline" else "kpBrand"
+    return "\n".join(
+        (
+            "% This file prefix is generated from validated publication design tokens.",
+            f"\\providecommand{{\\KnowledgeProductInkHex}}{{{palette.ink}}}",
+            f"\\providecommand{{\\KnowledgeProductPaperHex}}{{{palette.paper}}}",
+            f"\\providecommand{{\\KnowledgeProductAccentHex}}{{{palette.accent}}}",
+            f"\\providecommand{{\\KnowledgeProductAccentSoftHex}}{{{palette.accent_soft}}}",
+            f"\\providecommand{{\\KnowledgeProductMutedHex}}{{{palette.muted}}}",
+            f"\\providecommand{{\\KnowledgeProductRuleHex}}{{{palette.rule}}}",
+            f"\\providecommand{{\\KnowledgeProductChapterSize}}{{{chapter_size}}}",
+            f"\\providecommand{{\\KnowledgeProductChapterLeading}}{{{chapter_leading}}}",
+            f"\\providecommand{{\\KnowledgeProductSectionSize}}{{{section_size}}}",
+            f"\\providecommand{{\\KnowledgeProductSectionLeading}}{{{section_leading}}}",
+            f"\\providecommand{{\\KnowledgeProductLineSpread}}{{{line_spread}}}",
+            f"\\providecommand{{\\KnowledgeProductParagraphSkip}}{{{paragraph_skip}}}",
+            f"\\providecommand{{\\KnowledgeProductRunningHeader}}{{{running_header}}}",
+            f"\\providecommand{{\\KnowledgeProductKeyFrameColor}}{{{key_frame}}}",
+            f"\\providecommand{{\\KnowledgeProductSourceFrameColor}}{{{source_frame}}}",
+            "",
+        )
+    )
+
+
+def _geometry_for_publication(metadata: PublicationMetadata) -> str:
+    if metadata.line_length == "compact":
+        return "left=22mm,right=22mm,top=18mm,bottom=18mm"
+    return "left=16mm,right=16mm,top=18mm,bottom=18mm"
+
+
 def _write_pdf_contract_assets(workspace: Workspace, metadata: PublicationMetadata) -> None:
     delivery = workspace.root / "delivery"
     style_path = delivery / _PDF_STYLE_FILE
     cover_path = delivery / _PDF_COVER_FILE
-    style_path.write_text(_template_text(_PDF_STYLE_FILE), encoding="utf-8")
+    style_path.write_text(
+        _style_token_prefix(metadata) + _template_text(_PDF_STYLE_FILE), encoding="utf-8"
+    )
     (delivery / _PDF_TOC_FILE).write_text(_template_text(_PDF_TOC_FILE), encoding="utf-8")
     (delivery / _PDF_COMPONENTS_FILE).write_text(
         _template_text(_PDF_COMPONENTS_FILE), encoding="utf-8"
@@ -496,8 +556,8 @@ def missing_pdf_source_contracts(qmd_path: Path) -> list[str]:
         missing.append("PDF_CHINESE_STYLE_CONTRACT_MISSING")
     if _PDF_INLINE_CODE_MARKER not in components or "\\renewcommand{\\texttt}" not in components:
         missing.append("PDF_INLINE_CODE_STYLE_CONTRACT_MISSING")
-    publication = publication_path.read_text(encoding="utf-8") if publication_path.is_file() else ""
-    if PRESENTATION_PROFILE_ID not in publication:
+    expected_profile = publication.profile_id if publication is not None else None
+    if expected_profile is None or expected_profile not in source:
         missing.append("PDF_PUBLICATION_METADATA_MISSING")
     return missing
 
@@ -545,7 +605,7 @@ def create_quarto_source(
             "pdf": {
                 "papersize": "a4",
                 "fontsize": f"{publication_metadata.body_font_size}pt",
-                "geometry": "left=16mm,right=16mm,top=18mm,bottom=18mm",
+                "geometry": _geometry_for_publication(publication_metadata),
                 "documentclass": "extreport",
                 "keep-tex": True,
             }
@@ -557,7 +617,7 @@ def create_quarto_source(
         "include-in-header": [_PDF_STYLE_FILE, _PDF_TOC_FILE, _PDF_COMPONENTS_FILE],
         "include-before-body": [_PDF_COVER_FILE],
         "filters": [_PDF_COMPONENTS_FILTER_FILE],
-        "kp-pdf-profile": _PDF_PROFILE,
+        "kp-pdf-profile": publication_metadata.profile_id,
         "resource-path": [".."],
         "lang": constraints.language if constraints else "zh-CN",
         "mainfont": "TeX Gyre Termes",
@@ -756,6 +816,21 @@ def render_pdf(qmd_path: Path, output_dir: Path, workspace: Workspace | None = N
             )
             details = "；".join(finding.message for finding in component_findings + font_findings)
             raise RuntimeError(f"PDF 交付契约失败：{details}")
+    if workspace is not None and (workspace.root / "delivery" / PUBLICATION_METADATA_FILENAME).is_file():
+        try:
+            preview_path, preview = render_pdf_preview_set(
+                expected_output, workspace.root / "runs" / "pdf-preview"
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            workspace.append_event("pdf_render_failed", {"reason": "preview_generation_failed"})
+            raise RuntimeError("PDF 渲染后无法生成页面预览集") from error
+        workspace.append_event(
+            "pdf_preview_generated",
+            {
+                "preview_manifest": _relative(workspace, preview_path),
+                "renderer_available": preview.renderer_available,
+            },
+        )
     if workspace is not None:
         workspace.append_event(
             "pdf_rendered",
@@ -910,7 +985,7 @@ def release_readiness_findings(workspace: Workspace) -> list[QualityFinding]:
             )
         )
         return findings
-    if input_manifest.pdf_profile != _PDF_PROFILE:
+    if input_manifest.pdf_profile not in {PRESENTATION_PROFILE_ID, LEGACY_PRESENTATION_PROFILE_ID}:
         findings.append(
             _release_finding(
                 "RELEASE_BOOK_INPUT_MANIFEST_INVALID",

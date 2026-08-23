@@ -10,6 +10,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from knowledge_product_workflow.content_plan import ContentPlanError, require_current_content_plan
+from knowledge_product_workflow.developmental import (
+    DevelopmentalEditError,
+    require_current_developmental_report,
+)
 from knowledge_product_workflow.diagrams import validate_current_diagram_assets
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
 from knowledge_product_workflow.humanize import HumanizeReportError, require_current_humanize_report
@@ -39,7 +44,9 @@ _COMPLETE_ANSWER = re.compile(
     r"(?:完整(?:示范)?回答|完整回答示范|标准回答(?:要点)?|深度答案|complete answer(?: demonstration)?)",
     re.IGNORECASE,
 )
-_SUPPORTED_COMPONENTS = frozenset({"kp-source", "kp-key-takeaway", "kp-practice", "kp-note"})
+_SUPPORTED_COMPONENTS = frozenset(
+    {"kp-source", "kp-key-takeaway", "kp-practice", "kp-note", "kp-decision", "kp-procedure", "kp-worksheet"}
+)
 _VISIBLE_TEXT = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]")
 
 
@@ -314,6 +321,12 @@ def create_chapter_compliance_template(
             "当前章节合约来自缺少 section_outline 的旧蓝图；请先使用 "
             "kp amend-outline --workspace <工作区> --from <蓝图输入> 补齐、批准并重新编译合约。"
         )
+    try:
+        require_current_content_plan(workspace, chapter_number)
+    except ContentPlanError as error:
+        raise ContentPlanError(
+            f"{error}；请先运行 kp content-plan-template {chapter_number} 并提交当前内容计划。"
+        ) from error
     body = _reader_body_from_source(source).strip() + "\n"
     template = {
         "learning_objective_anchors": {objective: "" for objective in chapter.learning_objectives},
@@ -826,6 +839,17 @@ def submit_chapter(
             artifacts=[source, destination],
             next_command="kp amend-outline --workspace <工作区> --from <补齐 section_outline 的蓝图输入>",
         )
+    try:
+        require_current_content_plan(workspace, chapter_number)
+    except ContentPlanError as error:
+        raise _submission_error(
+            workspace,
+            chapter_number=chapter_number,
+            code="CONTENT_PLAN_REQUIRED",
+            message=str(error),
+            artifacts=[source, destination],
+            next_command=f"kp content-plan-template {chapter_number} --workspace <工作区>",
+        ) from error
     submission = ChapterComplianceSubmission(
         schema_version=1,
         chapter_number=chapter_number,
@@ -845,6 +869,17 @@ def submit_chapter(
             next_command=f"kp chapter-compliance-template {chapter_number} --workspace <工作区> --from <工作区内章节源稿>",
             findings=findings,
         )
+    try:
+        require_current_developmental_report(workspace, chapter_number, body, contract_path)
+    except DevelopmentalEditError as error:
+        raise _submission_error(
+            workspace,
+            chapter_number=chapter_number,
+            code="DEVELOPMENTAL_REPORT_REQUIRED",
+            message=str(error),
+            artifacts=[source],
+            next_command=f"kp developmental-check {chapter_number} --workspace <工作区> --from <工作区内章节源稿>",
+        ) from error
     if _requires_chinese_humanize(workspace):
         try:
             require_current_humanize_report(workspace, chapter_number, body, contract_path)
@@ -907,4 +942,18 @@ def validate_current_chapter_compliance(workspace: Workspace, chapter_path: Path
         return [_finding("CHAPTER_COMPLIANCE_STALE", chapter_path, workspace, "章节合规映射 JSON 无效。")]
     if record.chapter_version != parse_markdown_artifact(chapter_path.read_text(encoding="utf-8"))[0].version:
         return [_finding("CHAPTER_COMPLIANCE_STALE", chapter_path, workspace, "章节合规映射绑定的正文版本已过期。")]
-    return validate_chapter_submission(workspace, chapter_number, body, record, path=chapter_path)
+    findings = validate_chapter_submission(workspace, chapter_number, body, record, path=chapter_path)
+    try:
+        contract_path, _ = require_current_chapter_contract(workspace, chapter_number)
+        require_current_content_plan(workspace, chapter_number)
+        require_current_developmental_report(workspace, chapter_number, body, contract_path)
+    except (ChapterContractRequiredError, ContentPlanError, DevelopmentalEditError) as error:
+        findings.append(
+            _finding(
+                "DEVELOPMENTAL_REPORT_REQUIRED",
+                chapter_path,
+                workspace,
+                str(error),
+            )
+        )
+    return findings

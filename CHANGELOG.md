@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的格式，并使用[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-08-23
+
+### Added
+
+- 新增 `kp-publication-designer`、出版设计档案 v2 和受控 v5 PDF token 映射；历史 v4 profile 保持兼容。
+- 新增章节内容块计划、`kp-developmental-editor`、决策/步骤/工作表组件及版本绑定发展性编辑报告。
+- 新增 token 预算账本、缓存键、调用重试限制和 hidden CLI 控制面；默认 lean 模式防止新增 Skill 无边界消耗 token。
+- 新增 PDF 预览集、预览哈希绑定与人工视觉复核前提；新增 Python 代码块语法检查。
+- Skill 包扩展为 13 个 Skill，并校验共享资源 SHA-256、相对引用和暂存安装布局。
+
 ## [1.1.6] - 2026-08-08
 
 ### Fixed

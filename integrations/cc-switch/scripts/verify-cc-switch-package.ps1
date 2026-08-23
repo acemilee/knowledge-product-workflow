@@ -14,9 +14,36 @@ $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.package -ne 'knowledge-product-workflow' -or -not $manifest.skills) {
     throw 'Invalid skill package manifest.'
 }
-$orchestrationContract = Join-Path $PackageRoot 'references\orchestration-contract.md'
-if (-not (Test-Path -LiteralPath $orchestrationContract -PathType Leaf)) {
-    throw "Missing orchestration contract: $orchestrationContract"
+$sharedResources = @($manifest.shared_resources)
+if ($sharedResources.Count -eq 0) {
+    throw 'Package manifest must declare at least one shared resource.'
+}
+foreach ($resource in $sharedResources) {
+    $relativePath = [string]$resource.path
+    $expectedHash = [string]$resource.sha256
+    if ([string]::IsNullOrWhiteSpace($relativePath) -or $relativePath -match '(^|[\\/])\.\.([\\/]|$)') {
+        throw "Invalid shared resource path: $relativePath"
+    }
+    if ($expectedHash -notmatch '^[0-9a-f]{64}$') {
+        throw "Invalid shared resource hash: $relativePath"
+    }
+    $resourcePath = Join-Path $PackageRoot $relativePath
+    if (-not (Test-Path -LiteralPath $resourcePath -PathType Leaf)) {
+        throw "Missing shared resource: $relativePath"
+    }
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        # Hash canonical UTF-8/LF bytes so the manifest is stable across Windows and Unix checkouts.
+        $content = [System.IO.File]::ReadAllText($resourcePath, [System.Text.Encoding]::UTF8)
+        $canonical = $content.Replace("`r`n", "`n").Replace("`r", "`n")
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        $actualHash = ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
+        throw "Shared resource hash mismatch: $relativePath"
+    }
 }
 
 $requiredRootPhrases = @('kp init', 'kp brief', 'kp render-pdf', 'network_timeout')
@@ -35,6 +62,13 @@ foreach ($skill in @($manifest.skills)) {
     }
     if ([regex]::Matches($content, '(?m)^##\s+').Count -lt 6) {
         throw "Skill contract is incomplete: $skillPath"
+    }
+    foreach ($match in [regex]::Matches($content, '`(?<relative>(?:\.\./)+references/[^`]+)`')) {
+        $relativeReference = $match.Groups['relative'].Value
+        $referencePath = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $skillPath) $relativeReference))
+        if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) {
+            throw "Missing Skill relative reference: $name -> $relativeReference"
+        }
     }
 }
 

@@ -1,13 +1,21 @@
 {
   "package": "knowledge-product-workflow",
-  "version": "1.1.6",
+  "version": "1.2.0",
   "mode": "host-driven",
+  "shared_resources": [
+    {
+      "path": "references/orchestration-contract.md",
+      "sha256": "016afd4181c4731c38763c91af0ea3e0114a7e2655ed5c69794d5df1cbff8f4f"
+    }
+  ],
   "skills": [
     {"name": "kp-create", "role": "root-orchestrator"},
     {"name": "kp-product-strategist", "role": "product-strategy"},
+    {"name": "kp-publication-designer", "role": "publication-design"},
     {"name": "kp-curriculum-architect", "role": "curriculum"},
     {"name": "kp-research-verifier", "role": "research-verification"},
     {"name": "kp-chapter-writer", "role": "chapter-authoring"},
+    {"name": "kp-developmental-editor", "role": "developmental-editing"},
     {"name": "kp-chinese-humanize-editor", "role": "chinese-copy-editing"},
     {"name": "kp-diagram-designer", "role": "diagram-design"},
     {"name": "kp-practice-designer", "role": "practice-design"},

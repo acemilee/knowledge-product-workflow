@@ -1,6 +1,6 @@
 # PDF 视觉验收
 
-KP 的 PDF 使用固定 `knowledge-product-pdf-v4` 样式，而不是由宿主模型自由设计。读者交付只包含 `delivery/book.md` 和按 Brief 要求生成的 `delivery/book.pdf`；QMD、TeX、过滤器、台账、审稿记录和运行日志均为内部工件。
+KP 的 PDF 使用受控 `knowledge-product-pdf-v5` 样式，而不是由宿主模型自由设计。v5 通过受校验的出版设计 token 选择视觉家族、色彩、标题尺度、行宽、段落节奏和运行页眉；它不接受原始 TeX、CSS 或外部模板。历史 `knowledge-product-pdf-v4` 书稿保持可渲染，不会被静默迁移。读者交付只包含 `delivery/book.md` 和按 Brief 要求生成的 `delivery/book.pdf`；QMD、TeX、过滤器、台账、审稿记录和运行日志均为内部工件。
 
 ## 固定视觉系统
 
@@ -10,6 +10,7 @@ KP 的 PDF 使用固定 `knowledge-product-pdf-v4` 样式，而不是由宿主�
 - A4 正文默认 12pt，也支持显式选择 14pt；使用 `extreport` 使字号真正生效。左右页边距 16mm、上下页边距 18mm，代码块按正文同步放大并强制长行折行。
 - PDF 书签由 Markdown 标题生成；使用来源卡片时，PDF 必须保留可点击的 HTTPS 外部链接。
 - 首次汇编创建 `planning/publication-profile.yaml`，默认封面标签和页脚标签为“知识产品工作流”、版权行为“版权所有 {年份} 知识产品工作流”、版本为 `v1.0.0`。每次渲染会从该配置派生 `delivery/publication-metadata.yaml`；配置更新必须经受控预览和一次确认，旧 PDF/manifest 会归档。
+- v5 设计经用户确认后，PDF 渲染会生成版本绑定页面预览集。自动规则只阻断空白页、预览失效、重复图注和确定性裁切/溢出问题；文字可读性、留白是否合理和视觉识别度必须由人工复核，不能由无视觉模型自动宣称通过。
 
 ## 可自定义的出版信息
 

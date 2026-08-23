@@ -3,7 +3,7 @@ name: kp-chapter-writer
 description: 依据已批准章节合约和证据边界撰写读者可见的知识产品章节。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
 ---
 
 # KP Chapter Writer
@@ -36,7 +36,8 @@ metadata:
 5. 仅使用普通 Markdown 标题、表格、带语言标识的代码块，以及 `.kp-source`、`.kp-key-takeaway`、`.kp-practice`、`.kp-note` 读者组件。组件必须使用完整 fenced div（`::: {.kp-note}` 到对应的 `:::`）；绝不能单独输出 `{.kp-note}` 等裸标记。来源卡片必须写读者可见的标题和 HTTPS 链接。
 6. 函数、类、参数、变量、CLI 命令、文件路径、配置键和值、代码标识符必须用单反引号标注为行内代码，例如 `get_orders(user_id)`、`--workspace`、`runs/events.jsonl`。普通概念、完整句子和宣传性短语不得滥用反引号；长代码仍使用带语言标识的代码块。
 7. 插图仅引用当前书稿 `assets/` 中由受控工作流生成的 PDF、PNG、JPG/JPEG；SVG 必须先转换，且不得为凑页数添加无教学意义的图片。流程、架构、对比、时序或生命周期关系先交给 `kp-diagram-designer`，使用“图表模板 -> 受控引用 -> 终稿编辑 -> 提交图表”的 D2 链路，不保留 ASCII 字符画。
-8. 图表引用写入后，将最终章节源稿交给 `kp-chinese-humanize-editor`，运行 `kp humanize-check`；随后提交图表资产（有图表时），再由 `kp-quality-editor` 运行章节合规模板并提交章节。合规模板上下文中的 `expected_section_outline` 是只读真源，作者不得填写编号或标题结构字段；正文作者不得计算或填写正文/合约哈希。
+8. v5 出版设计档案启用时，先运行 `kp content-plan-template` 并提交覆盖全部 `section_outline` 的内容计划；每节声明读者任务、内容块和是否需要表/图/工作表。计划承诺的资产必须真正进入正文，不能用装饰组件凑篇幅。
+9. 图表引用写入并提交图表资产（有图表时）后，运行 `kp developmental-check`；它只检查读者任务、工件和解释节奏，不直接改写正文。通过后将最终章节源稿交给 `kp-chinese-humanize-editor`，运行 `kp humanize-check`，再由 `kp-quality-editor` 运行章节合规模板并提交章节。合规模板上下文中的 `expected_section_outline` 是只读真源，作者不得填写编号或标题结构字段；正文作者不得计算或填写正文/合约哈希。
 
 ## 篇幅预算
 
