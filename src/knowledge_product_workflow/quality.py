@@ -99,6 +99,11 @@ def quality_report_inputs(workspace: Workspace, validation_stage: str) -> list[Q
     candidates.extend(sorted((root / "chapters").glob("chapter-[0-9][0-9]-contract.md")))
     candidates.extend(sorted((root / "runs" / "chapter-compliance").glob("chapter-[0-9][0-9].json")))
     candidates.extend(sorted((root / "runs" / "humanize").glob("chapter-[0-9][0-9].json")))
+    candidates.extend(sorted((root / "runs" / "editorial").glob("chapter-[0-9][0-9]-developmental-report.json")))
+    candidates.extend(sorted((root / "chapters").glob("chapter-[0-9][0-9]-content-plan.yaml")))
+    token_budget = root / "runs" / "token-budget.json"
+    if token_budget.is_file():
+        candidates.append(token_budget)
     candidates.extend(sorted((root / "runs" / "review-batches").glob("**/*.json")))
     from knowledge_product_workflow.quality_exceptions import controlled_exception_input_paths
 
@@ -117,8 +122,10 @@ def quality_report_inputs(workspace: Workspace, validation_stage: str) -> list[Q
                 root / "delivery" / "knowledge-book-toc.tex",
                 root / "delivery" / "knowledge-book-components.tex",
                 root / "delivery" / "knowledge-book-components.lua",
+                root / "runs" / "pdf-preview" / "preview-manifest.json",
             )
         )
+        candidates.extend(sorted((root / "runs" / "pdf-preview").glob("*.png")))
         candidates.extend(sorted((root / "assets").glob("**/*")))
     files = sorted({path.resolve() for path in candidates if path.is_file()}, key=lambda path: path.as_posix())
     inputs = [
@@ -232,12 +239,14 @@ def _is_upstream_quality_input(path: str) -> bool:
             "research/source-ledger.jsonl",
             "research/assumption-ledger.jsonl",
             "chapters/chapter-01-sample.approved",
+            "runs/token-budget.json",
         }
         or path.startswith(
             (
                 "chapters/chapter-",
                 "runs/chapter-compliance/chapter-",
                 "runs/humanize/chapter-",
+                "runs/editorial/chapter-",
                 "runs/review-batches/",
             )
         )

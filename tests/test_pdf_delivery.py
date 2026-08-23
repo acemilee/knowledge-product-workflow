@@ -41,7 +41,8 @@ def test_qmd_uses_the_approved_fixed_a4_layout(tmp_path: Path) -> None:
     style = (workspace.root / "delivery" / "knowledge-book-style.tex").read_text(encoding="utf-8")
     assert "% knowledge-product-pdf-v4-style" in style
     assert "\\usepackage{xeCJK}" in style
-    assert "\\linespread{1.32}" in style
+    assert "\\providecommand{\\KnowledgeProductLineSpread}{1.32}" in style
+    assert "\\linespread{\\KnowledgeProductLineSpread}" in style
     assert "fontsize=\\normalsize" in style
     assert "\\renewcommand{\\headrulewidth}{0pt}" in style
     assert "\\AtBeginDocument" in style

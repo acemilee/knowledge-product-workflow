@@ -3,7 +3,7 @@ name: kp-research-verifier
 description: 为高风险事实建立内部来源与假设边界，阻止无证据主张进入知识产品正文。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
 ---
 
 # KP Research Verifier

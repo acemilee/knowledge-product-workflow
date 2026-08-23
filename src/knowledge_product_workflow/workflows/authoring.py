@@ -326,6 +326,8 @@ def amend_chapter_draft(workspace: Workspace, chapter_number: int, reason: str) 
         chapter_path,
         workspace.root / "runs" / "chapter-compliance" / f"chapter-{chapter_number:02d}.json",
         workspace.root / "runs" / "humanize" / f"chapter-{chapter_number:02d}.json",
+        workspace.root / "runs" / "editorial" / f"chapter-{chapter_number:02d}-developmental-report.json",
+        workspace.root / "chapters" / f"chapter-{chapter_number:02d}-content-plan.yaml",
     ):
         if source.is_file():
             destination = archive / source.name

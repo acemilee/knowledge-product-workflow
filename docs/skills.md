@@ -2,7 +2,7 @@
 
 Knowledge Product Workflow（KP）采用宿主驱动的多 Skill 协作模式：支持本地 Skill 的宿主（例如 Codex 或 Claude Code）负责理解用户意图和执行专业写作任务；`kp` CLI 负责保存工件、状态迁移、版本绑定、质量门和 PDF 渲染。KP 不内置或固定任何 LLM，也不会自行请求模型 API。
 
-本页说明的是**公开可部署的 11 个 Skill**。项目内的规范 `kp-*` Skill 包是唯一真源；`module/` 只是旧角色说明的兼容索引，不能作为安装源或修改目标。
+本页说明的是**公开可部署的 13 个 Skill**。项目内的规范 `kp-*` Skill 包是唯一真源；`module/` 只是旧角色说明的兼容索引，不能作为安装源或修改目标。
 
 ## 使用原则
 
@@ -10,7 +10,7 @@ Knowledge Product Workflow（KP）采用宿主驱动的多 Skill 协作模式：
 - 用户只在三个产品决策点确认：Brief、课程蓝图、第一章样章。之后说“继续完成全书，直到交付”即可让根 Skill 自动推进可安全执行的后续步骤。
 - 一个子 Skill 不是一个固定模型，也不是一个必然独立的 API 调用。它是一份定义任务边界、输入输出、验收条件和禁止事项的可加载指令包。
 - 专业 Skill 只能处理根编排器分配的当前工作单。输入版本改变、工单过期或章节租约冲突时，必须停止并交回根编排器重新路由。
-- `kp` CLI 是确定性控制面，不是第 12 个模型 Skill。它不编写课程或正文，也不替用户做产品决策。
+- `kp` CLI 是确定性控制面，不是模型 Skill。它不编写课程或正文，也不替用户做产品决策。
 
 ## 协作链路
 
@@ -18,21 +18,23 @@ Knowledge Product Workflow（KP）采用宿主驱动的多 Skill 协作模式：
 flowchart TD
   A[用户：主题与约束] --> B[kp-create 根编排]
   B --> C[kp-product-strategist\nBrief 预览]
-  C --> D{用户确认 Brief}
-  D --> E[kp-curriculum-architect\n教学页数建议与课程蓝图]
-  E --> F{用户确认蓝图}
-  F --> G[kp-research-verifier\n证据与假设边界]
-  G --> H[kp-chapter-writer\n章节正文]
-  H --> I[kp-practice-designer\n练习设计]
-  H --> J[kp-diagram-designer\nD2 图表]
-  I --> K[kp-chinese-humanize-editor\n中文终稿编辑]
-  J --> K
-  K --> L[kp-quality-editor\n章节与全书质量门]
-  L --> M{需要真实独立审稿？}
-  M -->|是，且宿主能力已验证| N[kp-independent-reviewer\n新宿主工作线程]
-  N --> L
-  M -->|否| O[kp-publisher\n汇编、PDF、交付校验]
-  L --> O
+  C --> D[kp-publication-designer\n出版设计预览]
+  D --> E{用户确认 Brief 与设计}
+  E --> F[kp-curriculum-architect\n教学页数建议与课程蓝图]
+  F --> G{用户确认蓝图}
+  G --> H[kp-research-verifier\n证据与假设边界]
+  H --> I[kp-chapter-writer\n内容计划与章节正文]
+  I --> J[kp-developmental-editor\n发展性编辑]
+  J --> K[kp-practice-designer\n练习设计]
+  J --> L[kp-diagram-designer\nD2 图表]
+  K --> M[kp-chinese-humanize-editor\n中文终稿编辑]
+  L --> M
+  M --> N[kp-quality-editor\n章节与全书质量门]
+  N --> R{需要真实独立审稿？}
+  R -->|是，且宿主能力已验证| S[kp-independent-reviewer\n新宿主工作线程]
+  S --> N
+  R -->|否| O[kp-publisher\n汇编、PDF、交付校验]
+  N --> O
   O --> P[delivery/book.md 与 book.pdf]
 ```
 
@@ -44,9 +46,11 @@ flowchart TD
 | --- | --- | --- | --- |
 | `kp-create` | 根编排器 | 用户创建、继续、校验或交付书稿时 | 用户可理解的阶段摘要、受控路由、审批请求和最终交付协调 |
 | `kp-product-strategist` | 产品策略 | 创建或修订 Brief 时 | 可审阅的产品 Brief 预览 |
+| `kp-publication-designer` | 出版设计 | Brief 形成后、首次展示前 | 受控出版设计预览与视觉 token |
 | `kp-curriculum-architect` | 课程架构 | Brief 获批后 | 教学页数建议、主题化课程蓝图和章节预算 |
 | `kp-research-verifier` | 研究核验 | 高风险事实、关键结论或研究影响需要确认时 | 来源台账、证据状态和影响判断 |
 | `kp-chapter-writer` | 章节作者 | 蓝图与章节合约可执行后 | 指定章节的可教学正文源稿 |
+| `kp-developmental-editor` | 发展性编辑 | 初稿与内容计划形成后 | 读者任务、工件与内容节奏的版本绑定报告 |
 | `kp-practice-designer` | 练习设计 | 章节需要练习、任务或验收活动时 | 与章节版本绑定的练习建议/工件 |
 | `kp-diagram-designer` | 图表设计 | 存在流程、架构、时序或对比关系时 | 语义图表定义和 D2 生成的受控图表资产 |
 | `kp-chinese-humanize-editor` | 中文终稿编辑 | 正文和图表引用完成后 | 已检查的中文终稿与编辑报告 |
@@ -77,6 +81,12 @@ flowchart TD
 **产出与交接。** 产出 Brief 预览，由根编排器展示给用户确认。获批 Brief 再交给 `kp-curriculum-architect`。页数和字数未提供时不会阻断；精确页数或区间页数会进入后续的教学篇幅建议流程。
 
 **边界。** 不能把 CLI 的 `--confirm` 当作用户批准，不能在用户未确认时创建正式 Brief，也不能把出版标签、页脚等派生信息误当作需要重做 Brief 的内容约束。
+
+### `kp-publication-designer`
+
+**职责。** 将主题、读者和阅读场景转化为一次受控的出版设计预览。设计仅包含有限的视觉家族、配色、阅读密度、运行页眉和组件策略 token，由发布者映射到固定 PDF 模板。
+
+**边界。** 它不写 TeX、CSS、QMD 或正文，不复制外部 PDF 风格，也不增加第四次用户审批。用户对 Brief 的确认同时确认该设计；后续仅修改出版设计只重建派生交付物。
 
 ### `kp-curriculum-architect`
 
@@ -109,6 +119,12 @@ flowchart TD
 **产出与交接。** 产出章节源稿；需要时请求研究、练习和图表协作。图表引用、中文终稿检查完成后，将章节移交质量编辑做合规映射与受控提交。第一章样章必须先等待用户确认，不能自动批量写后续章节。
 
 **边界。** 不能自行计算或填写章节/合约哈希、章节编号、内部 Schema 或资产清单；不能使用 ASCII 字符画，不能为了凑页数加入没有教学意义的图片，也不能并行改写其他章节。
+
+### `kp-developmental-editor`
+
+**职责。** 在初稿和中文终稿之间检查章节是否兑现内容块计划：读者任务是否清楚、计划的图表/表格/工作表是否存在、工作表是否可填写，以及解释段是否过度连续。
+
+**边界。** 它不直接改写正文，也不使用“AI 味分数”判断质量。确定性缺失才阻断；阅读节奏和结构建议以 warning 交回章节作者处理。报告与正文、合约、内容计划和保护片段哈希绑定，任一变化都会使报告过期。
 
 ### `kp-practice-designer`
 

@@ -5,6 +5,9 @@ local boxes = {
   ["kp-key-takeaway"] = "KpKeyTakeaway",
   ["kp-practice"] = "KpPractice",
   ["kp-note"] = "KpNote",
+  ["kp-decision"] = "KpDecision",
+  ["kp-procedure"] = "KpProcedure",
+  ["kp-worksheet"] = "KpWorksheet",
 }
 
 function Div(element)

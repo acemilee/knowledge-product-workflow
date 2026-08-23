@@ -37,6 +37,9 @@ class Workspace:
         from knowledge_product_workflow.runtime import initialize_new_orchestration
 
         initialize_new_orchestration(workspace)
+        from knowledge_product_workflow.token_budget import initialize_token_budget
+
+        initialize_token_budget(workspace)
         return workspace
 
     @classmethod

@@ -3,7 +3,7 @@ name: kp-quality-editor
 description: 执行确定性内容质量校验、汇总可执行修订项，并阻断不合格书稿；审稿批次仅用于用户主动请求的诊断。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
 ---
 
 # KP Quality Editor
@@ -27,12 +27,13 @@ metadata:
 
 ## 必要步骤与条件分支
 
-1. 运行确定性质量门：字数、重复、占位符、内部标记、泛化标题、来源泄漏与 Markdown 结构。
+1. 运行确定性质量门：字数、重复、占位符、内部标记、泛化标题、来源泄漏、Markdown 结构和 Python 代码块语法；代码检查不执行导入、网络或副作用。
 2. 遇到未声明的“真实 JD”“典型权重”、市场/薪资数字或绝对化结论时，要求在章节合约声明 Claim、映射正文标题并登记来源，或降级为情境案例。
 3. 每章进入提交前，先检查章节合约和模板上下文中的只读 `expected_section_outline`。它是编号、标题、层级和顺序的唯一真源；运行 `kp chapter-compliance-template <章节号> --workspace <workspace> --from <章节源稿>` 后，作者只填写学习目标、必需教学单元和 Claim 到当前正文标题的语义锚点，再运行 `kp submit-chapter`。不得要求作者填写或手工修补章节号、标题树、正文 SHA、合约 SHA 或内部 Schema。
 4. 章节未通过时读取当前工作区 `runs/diagnostics/submit-chapter-chapter-XX.json`、模板、上下文和指定源稿，按“文件、行号、实际标题、期望标题、唯一恢复命令”汇总；`HEADING_*` blocker 未消除前不允许审稿、汇编或发布。
 5. `deterministic_only` 下可按用户要求运行审稿诊断；`independent_review_required` 下必须运行 `kp submit-review-batch --workspace <workspace> --all`，并验证真实宿主子任务回执。`host_skill` 模式不得标记为独立审稿通过。
-6. PDF 含受控图表时，运行交付校验必须检查重复图注、当前 PDF 的视觉复核绑定和受控图表占高契约。确定性检查无法证明图中文字、裁切和版式时，返回“需要人工视觉复核”，不得标记可发布或让发布 Skill 绕过。
+6. v5 章节还必须检查内容计划、发展性编辑报告和工作表结构是否绑定当前正文；表/图/工作表承诺缺失时阻断，解释密度等主观问题仅给出 warning。
+7. PDF 含受控图表或 v5 出版档案时，运行交付校验必须检查重复图注、当前 PDF 预览集、视觉复核绑定和受控图表占高契约。确定性检查无法证明图中文字、裁切和版式时，返回“需要人工视觉复核”，不得标记可发布或让发布 Skill 绕过。
 
 ## 禁止事项
 

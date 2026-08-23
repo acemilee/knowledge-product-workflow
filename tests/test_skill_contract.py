@@ -80,7 +80,7 @@ def test_manifest_matches_installed_skill_files() -> None:
     manifest_names = {entry["name"] for entry in manifest["skills"]}
     installed = {path.parent.name for path in _skill_files()}
     assert manifest_names == installed
-    assert len(manifest_names) == 11
+    assert len(manifest_names) == 13
 
 
 def test_skill_frontmatter_is_consistent_with_package_metadata() -> None:
@@ -98,7 +98,7 @@ def test_skill_frontmatter_is_consistent_with_package_metadata() -> None:
 
 def test_every_skill_document_is_loaded() -> None:
     # 防止上面契约文档路径变更后测试静默缩小扫描范围。
-    assert len(_skill_files()) == 11
+    assert len(_skill_files()) == 13
     assert all(path.is_file() for path in CONTRACT_DOCS), CONTRACT_DOCS
 
 

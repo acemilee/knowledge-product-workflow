@@ -3,7 +3,7 @@ name: kp-practice-designer
 description: 为章节创建可执行练习、评分标准、示范答案和迁移任务。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
 ---
 
 # KP Practice Designer

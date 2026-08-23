@@ -2,13 +2,13 @@
 
 此目录是 Knowledge Product Workflow 的唯一可部署 Skill 源，当前版本为宿主驱动模式：Claude Code 或 Codex 承担模型调用，`kp` CLI 承担工件、路由、质量门和发布控制。
 
-11 个 Skill 的逐项职责、输入输出、协作边界和独立审稿前提见[Skill 架构与职责](../../docs/skills.md)。
+13 个 Skill 的逐项职责、输入输出、协作边界和独立审稿前提见[Skill 架构与职责](../../docs/skills.md)。
 
 ## 包内容
 
 - `skills/kp-create/`：唯一默认入口，负责中文状态、审批和专业 Skill 路由。
-- `skills/kp-*/`：10 个具有输入、写入范围、验收命令和人工门禁的专业 Skill，包含在新宿主会话中执行的 `kp-independent-reviewer`。
-- `references/orchestration-contract.md`：11 个 Skill 共同引用的编排契约；安装器会将其同步到 CC Switch 根目录的 `references/`。
+- `skills/kp-*/`：12 个具有输入、写入范围、验收命令和人工门禁的专业 Skill，包含出版设计、发展性编辑和在新宿主会话中执行的 `kp-independent-reviewer`。
+- `references/orchestration-contract.md`：13 个 Skill 共同引用的编排契约；安装器会将其同步到 CC Switch 根目录的 `references/`。
 - `claude-code/commands/`：Claude Code 命令适配模板。
 - `codex/README.md`：Codex 调用说明。
 - `scripts/`：校验、定向安装和可恢复卸载脚本。

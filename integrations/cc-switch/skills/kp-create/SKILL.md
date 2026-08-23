@@ -3,7 +3,7 @@ name: kp-create
 description: 从一个知识产品主题启动、继续或交付受控的中文知识产品工作流。协调专业 Skill、人工审批和受控 Markdown/PDF 交付时必须使用。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
   mode: host-driven
 ---
 
@@ -42,10 +42,10 @@ metadata:
 ## 必要步骤与条件分支
 
 1. 新产品运行 `kp init <book_id> --root output`。非 TTY 宿主将提取到的 Brief 字段写入当前工作区 `runs/brief-input.json`，用绝对路径调用 `kp brief ... --from <workspace>/runs/brief-input.json` 生成预览；绝不通过 stdin 按顺序喂答案。
-2. 将结构化 Brief 输入物化为可审阅 Brief；CLI 的 `--confirm` 仅是后台物化动作，不是用户确认。向用户只展示主题、受众、级别、交付形式和关键约束；仅当 `review_policy: independent_review_required` 时，先运行独立审稿能力预检。没有真实父子任务回执能力时，在 Brief 阶段阻断，不得批准 Brief、创建蓝图、正文或审稿批次。
+2. 将结构化 Brief 输入物化为可审阅 Brief；CLI 的 `--confirm` 仅是后台物化动作，不是用户确认。由 `kp-publication-designer` 为当前主题生成一次受控出版设计预览，并与 Brief 一次展示；不得新增用户审批点。向用户只展示主题、受众、级别、交付形式、出版设计和关键约束；仅当 `review_policy: independent_review_required` 时，先运行独立审稿能力预检。没有真实父子任务回执能力时，在 Brief 阶段阻断，不得批准 Brief、创建蓝图、正文或审稿批次。
 3. Brief 获得用户继续决定后，先将教学篇幅评估工作单交给 `kp-curriculum-architect`。若用户的精确/区间页数明显超过建议，向用户展示一张自然语言决策卡片，只收集“采用建议”“保留并扩展”或新的页数/范围；不展示预算 Schema。只有“保留并扩展”同时在蓝图列出新的、非重复教学单元时才可继续。
 4. 将主题化蓝图工作单交给 `kp-curriculum-architect`。根 Skill 只接收并提交主题蓝图，`required_units` 缺省由 CLI 按体裁补全；蓝图获得用户继续决定后运行 `kp compile-contracts --all`。
-5. 正文阶段一次只分派当前章节所有权。`kp-chapter-writer` 在自己的租约内按需调用研究、练习、图表与中文终稿；图表固定为“语义模板 -> 受控引用 -> 终稿编辑 -> D2 资产提交”，无图章节跳过图表分支。每章最终由 `kp-quality-editor` 生成语义合规映射并受控提交。
+5. 正文阶段一次只分派当前章节所有权。`kp-chapter-writer` 在自己的租约内先提交内容块计划，再写初稿并调用 `kp-developmental-editor`；通过后按需调用研究、练习、图表与中文终稿。图表固定为“语义模板 -> 受控引用 -> 终稿编辑 -> D2 资产提交”，无图章节跳过图表分支。每章最终由 `kp-quality-editor` 生成语义合规映射并受控提交。
 6. 研究完成后，由 `kp-research-verifier` 记录研究影响。包装变更走 Brief 交付型修订；内容、权重、范围或学习路径变更必须回到 Brief/蓝图审批与 `kp compile-contracts`；未证实内容降级为读者可见的情境案例。
 7. 用户表达“继续完成全书，直到交付”“直到交付”或同义意图时，后台运行 `kp start-run-intent --workspace <workspace>`。样章获得用户“继续”决定后，根 Skill 必须自动推进剩余章节、内部返工、确定性质量闭环、汇编、PDF 和交付；除真实产品决定、不可自动修复风险、用户暂停、宿主强制中断或最终交付外，不得结束当前任务。用户不需要逐章执行内部命令、填写 `required_units`、查看台账或输入工单信息。
 8. 每个宏阶段完成后运行 `kp status --json`，读取 `effective_constraints`、`runs/request-contract.yaml` 和 `next_actions`，只向用户报告已完成工件、下一次审批/决定和阻断摘要。CLI 控制面会在每个成功动作写入前冻结版本绑定工单，完成后自动记录凭证、关闭该工单并创建唯一后继工单；根 Skill 不得调用手工完成工单命令。自动运行意图仍为活动状态且没有用户决定时，立即消费后继工单；发布完成后它应自动终止，而不是输出“正在处理”后结束。最终交付质量报告无效、过期或未通过时，按唯一恢复动作重新校验；这是内部自动恢复，不要求用户提供工单信息或重新启动流程。

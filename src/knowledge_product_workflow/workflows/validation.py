@@ -11,6 +11,7 @@ from knowledge_product_workflow.assumption_ledger import (
 from knowledge_product_workflow.chapter_compliance import validate_current_chapter_compliance
 from knowledge_product_workflow.claim_quality import validate_undeclared_high_risk_claims
 from knowledge_product_workflow.claims import current_claim_contract_bindings
+from knowledge_product_workflow.code_quality import validate_code_blocks
 from knowledge_product_workflow.content_quality import scan_markdown_content
 from knowledge_product_workflow.detail_constraints import ReviewPolicy, count_words
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
@@ -33,6 +34,7 @@ from knowledge_product_workflow.quality import (
 )
 from knowledge_product_workflow.quality_exceptions import apply_controlled_exceptions
 from knowledge_product_workflow.source_ledger import validate_claims
+from knowledge_product_workflow.token_budget import token_budget_findings
 from knowledge_product_workflow.workflows.curriculum import parse_chapter_budgets
 from knowledge_product_workflow.workflows.product_brief import parse_detail_constraints
 from knowledge_product_workflow.workspace import Workspace
@@ -103,6 +105,17 @@ _RECOMPUTED_CODES = {
     "RELEASE_BOOK_INPUT_MANIFEST_MISSING",
     "RELEASE_BOOK_INPUT_MANIFEST_INVALID",
     "RELEASE_INPUT_HASH_MISMATCH",
+    "TOKEN_BUDGET_MISSING",
+    "TOKEN_BUDGET_INVALID",
+    "TOKEN_BUDGET_ACTION_UNFINISHED",
+    "TOKEN_BUDGET_ACTION_FAILED",
+    "TOKEN_BUDGET_EXHAUSTED",
+    "CONTENT_PLAN_REQUIRED",
+    "DEVELOPMENTAL_REPORT_REQUIRED",
+    "PDF_PREVIEW_MANIFEST_REQUIRED",
+    "PDF_PREVIEW_BLANK_PAGE",
+    "PDF_PREVIEW_SPARSE_PAGE",
+    "PYTHON_CODE_SYNTAX_INVALID",
 }
 
 
@@ -281,6 +294,12 @@ def validate_reader_content(
             )
         )
         findings.extend(
+            validate_code_blocks(
+                chapter_body,
+                str(chapter_path.relative_to(workspace.root)).replace("\\", "/"),
+            )
+        )
+        findings.extend(
             validate_presentation_markdown(
                 chapter_body,
                 str(chapter_path.relative_to(workspace.root)).replace("\\", "/"),
@@ -293,6 +312,7 @@ def validate_reader_content(
     if include_delivery_book and book_path.is_file():
         book_markdown = book_path.read_text(encoding="utf-8")
         findings.extend(scan_markdown_content(book_markdown, "delivery/book.md"))
+        findings.extend(validate_code_blocks(book_markdown, "delivery/book.md"))
         findings.extend(validate_presentation_markdown(book_markdown, "delivery/book.md", workspace))
     return findings
 
@@ -315,6 +335,7 @@ def _collect_validation_findings(
     findings.extend(validate_assumptions(assumption_ledger))
     findings.extend(validate_detail_constraints(workspace))
     findings.extend(validate_reader_content(workspace))
+    findings.extend(token_budget_findings(workspace))
     brief_path = workspace.root / "planning" / "product-brief.md"
     if brief_path.is_file():
         _, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))

@@ -3,7 +3,7 @@ name: kp-curriculum-architect
 description: 从已批准的知识产品 Brief 生成并提交主题化结构化课程蓝图，再批量派生当前章节合约。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
 ---
 
 # KP Curriculum Architect

@@ -1,7 +1,7 @@
 code: kp
 name: Knowledge Product Workflow
 header: Knowledge Product Workflow Module
-module_version: 1.1.6
+module_version: 1.2.0
 skill_package:
   canonical_source: integrations/cc-switch
   manifest: integrations/cc-switch/manifest.json
@@ -16,6 +16,9 @@ agents:
   - code: kp-product-strategist
     title: Product Strategist
     description: Defines target learners, commercial positioning, and scope.
+  - code: kp-publication-designer
+    title: Publication Designer
+    description: Converts approved product intent into validated publication design tokens.
   - code: kp-curriculum-architect
     title: Curriculum Architect
     description: Maps learning outcomes to a dependency-aware curriculum.
@@ -25,6 +28,9 @@ agents:
   - code: kp-chapter-writer
     title: Chapter Writer
     description: Drafts chapters from approved contracts and evidence packs.
+  - code: kp-developmental-editor
+    title: Developmental Editor
+    description: Checks reader jobs, content plans, reusable artifacts, and structural pacing.
   - code: kp-chinese-humanize-editor
     title: Chinese Humanize Editor
     description: Edits Chinese tutorial prose without altering facts or protected fragments.

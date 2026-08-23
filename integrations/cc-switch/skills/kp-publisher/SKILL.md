@@ -3,7 +3,7 @@ name: kp-publisher
 description: 受控汇编、渲染、验证并发布知识产品 Markdown/PDF，保留可审计交付清单。
 user-invocable: true
 metadata:
-  version: "1.1.6"
+  version: "1.2.0"
 ---
 
 # KP Publisher
@@ -31,7 +31,7 @@ metadata:
 
 1. 运行 `kp assemble` 生成唯一规范 Markdown：`delivery/book.md`，并冻结 `delivery/book-input-manifest.json`；它从 `planning/publication-profile.yaml` 派生当前 `delivery/publication-metadata.yaml`、封面、目录、样式、组件与过滤器资产。
 2. 读取 `kp status --json` 的 `effective_constraints`。只有 `next_actions` 包含 `PDF_REQUIRED_AND_MISSING` 时运行其给出的 `kp render-pdf` 参数；`delivery_format: both` 表示 PDF 是必需交付物。渲染器只接受 `delivery/book.qmd` 并只接纳 `delivery/book.pdf`；出现 TeX 溢出或输出路径契约失败时，查看 `runs/pdf-render.log` 后从上游修订，绝不移动嵌套 PDF。
-3. 运行 `kp validate-delivery`；它会重新验证输入图谱、来源、章节合规、图表、书稿、PDF 和视觉模板哈希。含图 PDF 会额外检查重复图注和当前 PDF 的视觉复核绑定；自动检查无法证明可读性时，根 Skill 必须收集一次当前版本的人工视觉复核，PDF 或图表变化后旧复核自动失效。质量报告绑定被校验输入，并归档至 `runs/quality-reports/`；报告处于 blocked、invalid 或 stale 时，按 `kp status` 推荐命令重跑校验，绝不删除 `qa-report.json`。托管运行中，该恢复校验由版本绑定工单明确授权；不得把恢复失败伪装成新的用户审批或要求用户重启工作流。
+3. 运行 `kp validate-delivery`；它会重新验证输入图谱、来源、章节合规、内容计划/发展性编辑、图表、书稿、PDF 和视觉模板哈希。v5 PDF 会生成当前字节绑定的页面预览集；含图或 v5 PDF 会额外检查重复图注、预览清单和当前视觉复核绑定。自动检查无法证明可读性时，根 Skill 必须收集一次当前版本的人工视觉复核，PDF、预览或图表变化后旧复核自动失效。质量报告绑定被校验输入，并归档至 `runs/quality-reports/`；报告处于 blocked、invalid 或 stale 时，按 `kp status` 推荐命令重跑校验，绝不删除 `qa-report.json`。托管运行中，该恢复校验由版本绑定工单明确授权；不得把恢复失败伪装成新的用户审批或要求用户重启工作流。
 4. 仅在全部质量门通过后运行 `kp publish` 生成 `delivery-manifest.yaml`。清单路径固定为工作区相对 POSIX 路径，例如 `delivery/book.md`；旧清单或过期清单只能重新运行 `kp publish` 重建。
 5. 向用户报告最终书稿路径，不展示内部来源台账、Claim ID 或审稿 JSON。
 
