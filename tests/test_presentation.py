@@ -16,6 +16,7 @@ from knowledge_product_workflow.workspace import Workspace
 
 def test_publication_profile_keeps_defaults_while_metadata_refreshes_from_current_book(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "guide")
+    create_product_brief(workspace, "AI Agent 工程实践")
 
     created = load_or_create_publication_metadata(
         workspace,
@@ -39,7 +40,7 @@ def test_publication_profile_keeps_defaults_while_metadata_refreshes_from_curren
     assert created.publication_date == date(2026, 8, 1)
     assert created.cover_label == "知识产品工作流"
     assert created.footer_label == "知识产品工作流"
-    assert created.copyright_line == "版权所有 2026 知识产品工作流"
+    assert created.copyright_line == "© 2026 知识产品工作流"
     assert reloaded.title == "更新后的标题"
     assert reloaded.audience_label == "更新后的受众"
     assert reloaded.subtitle == "专业知识教程"
@@ -62,6 +63,7 @@ def test_publication_metadata_applies_optional_overrides_without_making_them_req
         audience_label="For English-speaking engineers",
         language="en-US",
         overrides=PresentationOverrides(
+            cover_layout_revision=1,
             subtitle="A practical production guide",
             edition="Second edition",
             publication_date=date(2026, 7, 31),

@@ -1,0 +1,154 @@
+% knowledge-product-pdf-v6-style
+% A4 editorial reading profile; earlier profiles use their own fixed assets.
+\usepackage{xeCJK}
+\usepackage{fontspec}
+\usepackage{unicode-math}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{fvextra}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\setkeys{Gin}{keepaspectratio}
+\usepackage{caption}
+\usepackage{booktabs}
+\usepackage{longtable}
+% Short natural-width tables follow the body axis; wide comparisons retain their widths.
+\setlength{\LTleft}{0pt}
+\setlength{\LTright}{\fill}
+\usepackage{array}
+\usepackage{xurl}
+\usepackage{needspace}
+\usepackage{etoolbox}
+\usepackage{enumitem}
+
+\definecolor{kpInk}{HTML}{\KnowledgeProductInkHex}
+\definecolor{kpPaper}{HTML}{\KnowledgeProductPaperHex}
+\definecolor{kpBrand}{HTML}{\KnowledgeProductAccentHex}
+\definecolor{kpBrandSoft}{HTML}{\KnowledgeProductAccentSoftHex}
+\definecolor{kpRule}{HTML}{\KnowledgeProductRuleHex}
+\definecolor{kpMuted}{HTML}{\KnowledgeProductMutedHex}
+
+\ifdefstring{\KnowledgeProductFontPolicy}{fallback}{
+  \setmainfont[Scale=1]{Latin Modern Sans}
+  \setsansfont[Scale=1]{Latin Modern Sans}
+  \setmonofont{Latin Modern Mono}
+  \setCJKmainfont[Scale=1]{SimHei}
+  \setCJKsansfont[Scale=1]{SimHei}
+  \setCJKmonofont[Scale=1]{SimHei}
+}{
+  % knowledge-product-pdf-v6-reference-fonts
+  % Missing preferred fonts are an error, never a silent design substitution.
+  \setmainfont[Scale=1]{Inter}
+  \setsansfont[Scale=1]{Inter}
+  % Preserve the accepted 10.8277 PDF pt code role at the small text size.
+  \setmonofont[Scale=0.99254]{JetBrains Mono}
+  \setCJKmainfont[Scale=1,BoldFont={PingFang SC Semibold}]{PingFang SC}
+  \setCJKsansfont[Scale=1,BoldFont={PingFang SC Semibold}]{PingFang SC}
+  \setCJKmonofont[Scale=1,BoldFont={PingFang SC Semibold}]{PingFang SC}
+}
+% knowledge-product-pdf-v6-mixed-typography
+% Do not inherit Pandoc's MatchLowercase scaling for Chinese or mathematics.
+\setmathfont[Scale=1]{Latin Modern Math}
+% knowledge-product-pdf-v6-math-alphabets-1
+% unicode-math otherwise inherits text alphabets (Inter), including operators.
+\unimathsetup{mathrm=sym,mathit=sym,mathbf=sym}
+\setoperatorfont{\symup}
+% Preserve the input character when font glyphs have private-use aliases.
+\XeTeXgenerateactualtext=1
+\xeCJKsetup{CJKecglue = {\hskip .25em}, xCJKecglue = false}
+\frenchspacing
+\linespread{\KnowledgeProductLineSpread}\selectfont
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{\KnowledgeProductParagraphSkip}
+\renewcommand{\arraystretch}{1.28}
+% Keep tinted code cells visually separated as well as the glyphs themselves.
+\setlength{\tabcolsep}{6pt}
+\setlength{\emergencystretch}{3em}
+% Keep at least two lines of an ordinary paragraph on either side of a
+% page boundary; long paragraphs and reader blocks may still continue.
+\clubpenalty=10000
+\widowpenalty=10000
+\displaywidowpenalty=10000
+\Urlmuskip=0mu plus 1mu
+\setlength{\LTpre}{8pt}
+\setlength{\LTpost}{8pt}
+\arrayrulecolor{kpRule}
+\rowcolors{1}{kpBrandSoft}{kpPaper}
+\renewcommand{\labelenumi}{\textcolor{kpBrand}{\arabic{enumi}.}}
+% format colours the marker even when Pandoc redefines labelenumi afterwards.
+\setlist[enumerate,1]{format=\color{kpBrand},leftmargin=*,labelsep=0.5em,itemsep=4pt,topsep=6pt,parsep=0pt}
+\setlist[itemize,1]{label=\textcolor{kpBrand}{\textbullet},leftmargin=1.5em,labelsep=0.5em,itemsep=4pt,topsep=6pt,parsep=0pt}
+\setlist[itemize,2]{label={\tiny\textbullet},format=\color{kpMuted},leftmargin=1.4em,itemsep=3pt,topsep=4pt,parsep=0pt}
+\captionsetup{font=small,labelfont={bf,color=kpMuted},textfont={color=kpMuted},skip=4pt}
+\setlength{\intextsep}{8pt}
+\setlength{\textfloatsep}{10pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{kpMuted}\KnowledgeProductRunningHeader}
+\fancyfoot[C]{\small\color{kpMuted}\thepage}
+\fancyfoot[R]{\small\color{kpMuted}\KnowledgeProductFooterLabel}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+% report applies the plain style to chapter opening and TOC pages.
+\fancypagestyle{plain}{
+  \fancyhf{}
+  \fancyfoot[C]{\small\color{kpMuted}\thepage}
+  \fancyfoot[R]{\small\color{kpMuted}\KnowledgeProductFooterLabel}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0pt}
+}
+\renewcommand{\chaptermark}[1]{\markboth{#1}{}}
+\renewcommand{\sectionmark}[1]{\markright{#1}}
+
+\titleformat{\chapter}[hang]
+  {\normalfont\bfseries\color{kpInk}\linespread{1}\fontsize{\KnowledgeProductChapterSize}{\KnowledgeProductChapterLeading}\selectfont}
+  {\color{kpBrand}\thechapter}{0.8em}{}
+\titlespacing*{\chapter}{0pt}{0pt}{14pt}
+\titleformat{\section}
+  {\normalfont\bfseries\color{kpInk}\linespread{1}\fontsize{\KnowledgeProductSectionSize}{\KnowledgeProductSectionLeading}\selectfont}
+  {\color{kpBrand}\thesection}{0.7em}
+  {\color{kpRule}\titlerule[0.45pt]\vspace{7pt}\color{kpInk}}
+  [\vspace{7pt}{\color{kpRule}\titlerule[0.45pt]}]
+\titlespacing*{\section}{0pt}{18pt}{10pt}
+\titleformat{\subsection}
+  {\normalfont\bfseries\color{kpInk}\fontsize{14}{20}\selectfont}
+  {\color{kpBrand}\thesubsection}{0.6em}{}
+\titlespacing*{\subsection}{0pt}{16pt}{8pt}
+% Evaluate remaining height now; deferred glue can enter longtable's output routine.
+\pretocmd{\section}{\Needspace{5\baselineskip}}{}{}
+\pretocmd{\subsection}{\Needspace{3\baselineskip}}{}{}
+
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}
+  {commandchars=\\\{\},breaklines=true,breakanywhere=true,fontsize=\small,baselinestretch=1.10,formatcom={\xeCJKsetup{CJKecglue = \hskip 0pt}}}
+% Balanced per-line marked content keeps CJK fallback glyphs in the code role
+% without changing their text, font or size, including across page breaks.
+\let\KpOriginalFancyVerbFormatLine\FancyVerbFormatLine
+\renewcommand{\FancyVerbFormatLine}[1]{%
+  \special{pdf:content /KPCode BMC}%
+  \KpOriginalFancyVerbFormatLine{#1}%
+  \special{pdf:content EMC}%
+}
+\makeatletter
+\newcount\KpCodeTotalLines
+\newif\ifKpCodeTailOpen
+\newcommand{\KpCodeTailLines}[1]{\KpCodeTotalLines=#1\relax}
+% FancyVerb buffers one line; start a finite tail before the final two reads.
+\pretocmd{\FV@@PreProcessLine}{%
+  \ifnum\KpCodeTotalLines>2\relax
+    \ifnum\FV@CodeLineNo=\numexpr\KpCodeTotalLines-1\relax
+      \global\KpCodeTailOpentrue\vbox\bgroup
+    \fi
+  \fi
+}{}{\PackageError{knowledge-product}{Code tail hook unavailable}{Check FancyVerb compatibility.}}
+\apptocmd{\FV@ListProcessLastLine}{%
+  \ifKpCodeTailOpen\egroup\global\KpCodeTailOpenfalse\fi
+}{}{\PackageError{knowledge-product}{Code tail close hook unavailable}{Check FancyVerb compatibility.}}
+\AtBeginDocument{%
+  \let\maketitle\relax
+  \hypersetup{colorlinks=true,linkcolor=kpBrand,urlcolor=kpBrand,citecolor=kpBrand}
+  \@ifundefined{Shaded}{}{%
+    \renewenvironment{Shaded}{\begin{KpCodeBox}}{\end{KpCodeBox}}%
+  }%
+}
+\makeatother

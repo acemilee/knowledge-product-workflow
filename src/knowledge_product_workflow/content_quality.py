@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Iterable
 
@@ -39,9 +40,7 @@ HIGH_RISK_FACTUAL_PATTERNS = (
     re.compile(r"典型\s*(?:权重|流程|标准|薪资|面试)", re.IGNORECASE),
     re.compile(r"一位\s*(?:面试官|招聘经理|用人经理).{0,24}(?:告诉我|表示|说)", re.IGNORECASE),
 )
-_CASE_LABEL = re.compile(r"(?:情境案例|虚构案例|示例|假设)", re.IGNORECASE)
-_PERCENTAGE_VALUE = re.compile(r"\d+(?:\.\d+)?%")
-_PERCENTAGE_DISTRIBUTION_CONTEXT = re.compile(r"(?:占比|权重|合计|总计|构成|比例|分配)")
+_CASE_LABEL = re.compile(r"^\s*(?:情境案例|虚构案例|示例|假设)(?:[：:]|\s)", re.IGNORECASE)
 _QUANTIFIED_RESUME_EXAMPLE = re.compile(
     r"(?:简历|项目经历|STAR|成果描述).{0,120}?\d+(?:\.\d+)?\s*(?:%|ms|秒|人|天|周|月|倍|万)",
     re.IGNORECASE | re.DOTALL,
@@ -54,6 +53,66 @@ _RESUME_EVIDENCE_BOUNDARY = re.compile(
 )
 _MIN_NORMALIZED_PARAGRAPH_LENGTH = 80
 _DUPLICATE_THRESHOLD = 0.90
+_INLINE_CODE = re.compile(r"(?<!`)(?P<ticks>`+)(?!`)(?P<expression>.*?)(?<!`)(?P=ticks)(?!`)")
+_CODE_FENCE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<suffix>.*)$")
+_MATH_TYPESETTING = re.compile(r"[‖√∑∏∫×÷]|\w\s*·\s*\w|[¹²³⁰⁴⁵⁶⁷⁸⁹].*[+=−-]")
+_AMBIGUOUS_MATH_EQUATION = re.compile(r"(?<![<>=!:])=(?!=)")
+_ASCII_ARITHMETIC = re.compile(r"[\w)]\s*[+*/^−-]\s*[\w(]")
+_RELATIVE_FILE_PATH = re.compile(r"^[^\s]+/[^\s]+\.[A-Za-z][A-Za-z0-9]{0,6}$")
+_SHELL_OPTION = re.compile(r"^[A-Za-z0-9_.-]+\s+--?[A-Za-z][\w-]*(?:=|\s|$)")
+_STRING_LITERAL = re.compile(r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*' ''', re.VERBOSE)
+_COMMAND_OR_PATH = re.compile(
+    r"^(?:https?://|[A-Za-z]:[\\/]|\.{0,2}/|~/|--?|"
+    r"(?:python(?:\d(?:\.\d+)?)?|py|pwsh|powershell|bash|sh|echo|git|kp|curl|pip|uv|npm|node)\s)",
+    re.IGNORECASE,
+)
+
+
+def find_math_code_findings(markdown: str, location: str) -> list[QualityFinding]:
+    """Locate high-confidence typeset calculations without editing any payload."""
+    findings: list[QualityFinding] = []
+    fence_character = ""
+    fence_length = 0
+    for line_number, line in enumerate(markdown.splitlines(), start=1):
+        logical_line = re.sub(r"^ {0,3}(?:> ?)+", "", line)
+        logical_line = re.sub(r"^ {0,3}(?:[-+*]|\d+[.)])\s+", "", logical_line)
+        fence = _CODE_FENCE.match(logical_line)
+        if fence is not None:
+            delimiter = fence.group("fence")
+            if not fence_character:
+                fence_character, fence_length = delimiter[0], len(delimiter)
+            elif (delimiter[0] == fence_character and len(delimiter) >= fence_length
+                  and not fence.group("suffix").strip()):
+                fence_character = ""
+            continue
+        if fence_character or line.startswith(("    ", "\t")):
+            continue
+        for match in _INLINE_CODE.finditer(line):
+            expression = match.group("expression")
+            stripped = expression.strip()
+            # Backslashes/dollars denote source-level LaTeX teaching here.
+            if (not stripped or "\\" in stripped or "$" in stripped
+                    or _COMMAND_OR_PATH.search(stripped) or _RELATIVE_FILE_PATH.fullmatch(stripped)
+                    or _SHELL_OPTION.search(stripped)):
+                continue
+            try:
+                ast.parse(stripped, mode="exec")
+            except (SyntaxError, ValueError):
+                pass
+            else:
+                continue  # Real Python, including string literals and assignments.
+            unquoted = _STRING_LITERAL.sub("", stripped)
+            high_confidence = bool(_MATH_TYPESETTING.search(unquoted))
+            ambiguous = bool(_AMBIGUOUS_MATH_EQUATION.search(unquoted) and _ASCII_ARITHMETIC.search(unquoted))
+            if not high_confidence and not ambiguous:
+                continue
+            findings.append(QualityFinding(
+                code="MATH_EXPRESSION_AS_CODE", severity=Severity.BLOCKER if high_confidence else Severity.WARNING,
+                location=f"{location}:第 {line_number} 行，第 {match.start('expression') + 1} 列",
+                message=(f"{'手算数学表达' if high_confidence else '疑似数学表达，需编辑人工确认'}被标记为 Code：{expression}；"
+                         "请通过正文修订核对数学标记，保持数值、算法和程序数据不变。"),
+            ))
+    return findings
 
 
 def _visible_line(line: str) -> str:
@@ -110,14 +169,15 @@ def high_risk_factual_lines(markdown: str) -> list[tuple[int, str]]:
         if in_code_fence:
             continue
         line = _visible_line(raw_line)
-        if not _CASE_LABEL.search(line) and any(pattern.search(line) for pattern in HIGH_RISK_FACTUAL_PATTERNS):
+        segments = [segment.strip().replace("**", "") for segment in re.split(r"[。；;]", line)]
+        if any(not _CASE_LABEL.search(segment) and any(pattern.search(segment) for pattern in HIGH_RISK_FACTUAL_PATTERNS) for segment in segments):
             matches.append((line_number, line))
     return matches
 
 
 def scan_markdown_content(markdown: str, location: str) -> list[QualityFinding]:
     """Return blockers for reader-visible quality, trace leakage, and factual safety rules."""
-    findings: list[QualityFinding] = []
+    findings = find_math_code_findings(markdown, location)
     visible_lines: list[tuple[int, str]] = []
     headings: dict[tuple[str, int, str], int] = {}
     chapter_scope = ""
@@ -208,26 +268,6 @@ def scan_markdown_content(markdown: str, location: str) -> list[QualityFinding]:
                     message="检测到读者正文中的来源台账或内部来源标签，请移出最终书稿。",
                 )
             )
-        percentage_values = [
-            float(value.rstrip("%")) for value in _PERCENTAGE_VALUE.findall(line)
-        ]
-        if (
-            len(percentage_values) >= 3
-            and ("=" in line or _PERCENTAGE_DISTRIBUTION_CONTEXT.search(line))
-            and abs(sum(percentage_values) - 100) > 0.001
-        ):
-            findings.append(
-                QualityFinding(
-                    code="PERCENTAGE_TOTAL_INVALID",
-                    severity=Severity.BLOCKER,
-                    location=f"{location}:第 {line_number} 行",
-                    message=(
-                        f"百分比表达式合计为 {sum(percentage_values):g}% 而非 100%；"
-                        "请修正分配值或说明这些比例不是同一总体。"
-                    ),
-                )
-            )
-
     candidates: list[tuple[int, str]] = []
     for line_number, paragraph in _paragraphs(visible_lines):
         normalized = _normalize(paragraph)

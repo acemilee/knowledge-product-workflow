@@ -1,0 +1,96 @@
+% knowledge-product-pdf-v6-style
+% A4 editorial reading profile; earlier profiles use their own fixed assets.
+\usepackage{xeCJK}
+\usepackage{fontspec}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{fvextra}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xurl}
+\usepackage{needspace}
+\usepackage{etoolbox}
+
+\definecolor{kpInk}{HTML}{\KnowledgeProductInkHex}
+\definecolor{kpPaper}{HTML}{\KnowledgeProductPaperHex}
+\definecolor{kpBrand}{HTML}{\KnowledgeProductAccentHex}
+\definecolor{kpBrandSoft}{HTML}{\KnowledgeProductAccentSoftHex}
+\definecolor{kpRule}{HTML}{\KnowledgeProductRuleHex}
+\definecolor{kpMuted}{HTML}{\KnowledgeProductMutedHex}
+
+\ifdefstring{\KnowledgeProductFontPolicy}{fallback}{
+  \setmainfont{Latin Modern Sans}
+  \setsansfont{Latin Modern Sans}
+  \setmonofont{Latin Modern Mono}
+  \setCJKmainfont{SimHei}
+  \setCJKsansfont{SimHei}
+  \setCJKmonofont{SimHei}
+}{
+  \IfFontExistsTF{TeX Gyre Heros}{\setmainfont{TeX Gyre Heros}\setsansfont{TeX Gyre Heros}}{\setmainfont{Latin Modern Sans}\setsansfont{Latin Modern Sans}}
+  \IfFontExistsTF{Consolas}{\setmonofont{Consolas}}{\setmonofont{Latin Modern Mono}}
+  \IfFontExistsTF{Microsoft YaHei}{\setCJKmainfont{Microsoft YaHei}\setCJKsansfont{Microsoft YaHei}\setCJKmonofont{Microsoft YaHei}}{\setCJKmainfont{SimHei}\setCJKsansfont{SimHei}\setCJKmonofont{SimHei}}
+}
+\xeCJKsetup{CJKecglue = \hskip 0pt}
+\frenchspacing
+\linespread{\KnowledgeProductLineSpread}\selectfont
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{\KnowledgeProductParagraphSkip}
+\renewcommand{\arraystretch}{1.28}
+\setlength{\tabcolsep}{4pt}
+\setlength{\emergencystretch}{3em}
+\Urlmuskip=0mu plus 1mu
+\setlength{\LTpre}{8pt}
+\setlength{\LTpost}{8pt}
+\arrayrulecolor{kpRule}
+\rowcolors{1}{kpBrandSoft}{kpPaper}
+\renewcommand{\labelenumi}{\textcolor{kpBrand}{\arabic{enumi}.}}
+\captionsetup{font=small,labelfont={bf,color=kpMuted},textfont={color=kpMuted}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{kpMuted}\KnowledgeProductRunningHeader}
+\fancyfoot[C]{\small\color{kpMuted}\thepage}
+\fancyfoot[R]{\small\color{kpMuted}\KnowledgeProductFooterLabel}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+% report applies the plain style to chapter opening and TOC pages.
+\fancypagestyle{plain}{
+  \fancyhf{}
+  \fancyfoot[C]{\small\color{kpMuted}\thepage}
+  \fancyfoot[R]{\small\color{kpMuted}\KnowledgeProductFooterLabel}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0pt}
+}
+\renewcommand{\chaptermark}[1]{\markboth{#1}{}}
+\renewcommand{\sectionmark}[1]{\markright{#1}}
+
+\titleformat{\chapter}[hang]
+  {\normalfont\bfseries\color{kpInk}\fontsize{\KnowledgeProductChapterSize}{\KnowledgeProductChapterLeading}\selectfont}
+  {\color{kpBrand}\thechapter}{0.8em}{}
+\titlespacing*{\chapter}{0pt}{0pt}{24pt}
+\titleformat{\section}
+  {\normalfont\bfseries\color{kpInk}\fontsize{\KnowledgeProductSectionSize}{\KnowledgeProductSectionLeading}\selectfont}
+  {\color{kpBrand}\thesection}{0.7em}{}
+\titlespacing*{\section}{0pt}{22pt}{10pt}
+\titleformat{\subsection}
+  {\normalfont\bfseries\color{kpInk}\fontsize{14}{20}\selectfont}
+  {\color{kpBrand}\thesubsection}{0.6em}{}
+\titlespacing*{\subsection}{0pt}{16pt}{8pt}
+\pretocmd{\section}{\needspace{4\baselineskip}}{}{}
+\pretocmd{\subsection}{\needspace{3\baselineskip}}{}{}
+
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}
+  {commandchars=\\\{\},breaklines=true,breakanywhere=true,fontsize=\small}
+\makeatletter
+\AtBeginDocument{%
+  \let\maketitle\relax
+  \hypersetup{colorlinks=true,linkcolor=kpBrand,urlcolor=kpBrand,citecolor=kpBrand}
+  \@ifundefined{Shaded}{}{%
+    \renewenvironment{Shaded}{\begin{KpCodeBox}}{\end{KpCodeBox}}%
+  }%
+}
+\makeatother

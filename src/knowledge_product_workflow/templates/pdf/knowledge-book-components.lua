@@ -8,6 +8,7 @@ local boxes = {
   ["kp-decision"] = "KpDecision",
   ["kp-procedure"] = "KpProcedure",
   ["kp-worksheet"] = "KpWorksheet",
+  ["kp-percentage-distribution"] = "KpPercentageDistribution",
 }
 
 function Div(element)

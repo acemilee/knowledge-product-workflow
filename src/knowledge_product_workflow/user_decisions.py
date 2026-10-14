@@ -9,6 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
+import yaml
 from pydantic import BaseModel, Field
 
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
@@ -53,6 +54,7 @@ class UserDecisionRecord(BaseModel):
     artifact_path: str
     artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_version: int = Field(ge=1)
+    publication_profile_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     requested_at: datetime
     displayed_at: datetime
     state: UserDecisionState = UserDecisionState.PENDING
@@ -177,13 +179,24 @@ def _archive_record(workspace: Workspace, record: UserDecisionRecord) -> Path:
     return output
 
 
+def _design_binding(workspace: Workspace, target: UserDecisionTarget) -> str | None:
+    if target is not UserDecisionTarget.BRIEF:
+        return None
+    path = workspace.root / "planning" / "publication-profile.yaml"
+    if not path.is_file():
+        return None
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return sha256(path.read_bytes()).hexdigest() if isinstance(raw, dict) and raw.get("profile_id") == "knowledge-product-pdf-v6" else None
+
+
 def _matches_snapshot(
-    record: UserDecisionRecord, *, path: str, artifact_sha256: str, version: int
+    workspace: Workspace, record: UserDecisionRecord, *, path: str, artifact_sha256: str, version: int
 ) -> bool:
     return (
         record.artifact_path == path
         and record.artifact_sha256 == artifact_sha256
         and record.artifact_version == version
+        and record.publication_profile_sha256 == _design_binding(workspace, record.target)
     )
 
 
@@ -197,7 +210,7 @@ def request_user_decision(
     path, artifact_sha256, version = _artifact_snapshot(workspace, target)
     existing = _read_record(workspace, target)
     if existing is not None and _matches_snapshot(
-        existing, path=path, artifact_sha256=artifact_sha256, version=version
+        workspace, existing, path=path, artifact_sha256=artifact_sha256, version=version
     ) and existing.state not in {UserDecisionState.INVALIDATED, UserDecisionState.CONSUMED}:
         return existing
     if existing is not None:
@@ -217,6 +230,7 @@ def request_user_decision(
         artifact_path=path,
         artifact_sha256=artifact_sha256,
         artifact_version=version,
+        publication_profile_sha256=_design_binding(workspace, target),
         requested_at=now,
         displayed_at=now,
         work_order_id=work_order_id,
@@ -243,7 +257,7 @@ def record_user_decision(
     if record is None:
         raise UserDecisionRequiredError("尚未展示当前产物，不能记录用户决定")
     path, artifact_sha256, version = _artifact_snapshot(workspace, target)
-    if not _matches_snapshot(record, path=path, artifact_sha256=artifact_sha256, version=version):
+    if not _matches_snapshot(workspace, record, path=path, artifact_sha256=artifact_sha256, version=version):
         raise UserDecisionStaleError("内容已更新，请确认最新版本")
     if record.state is UserDecisionState.CONSUMED:
         raise UserDecisionRequiredError("当前用户决定已被消费；请等待新的待确认产物")
@@ -281,7 +295,7 @@ def require_approved_user_decision(workspace: Workspace, target: UserDecisionTar
     if record is None:
         raise UserDecisionRequiredError("尚未收到当前版本的用户确认")
     path, artifact_sha256, version = _artifact_snapshot(workspace, target)
-    if not _matches_snapshot(record, path=path, artifact_sha256=artifact_sha256, version=version):
+    if not _matches_snapshot(workspace, record, path=path, artifact_sha256=artifact_sha256, version=version):
         raise UserDecisionStaleError("内容已更新，请确认最新版本")
     if record.state is UserDecisionState.INVALIDATED:
         raise UserDecisionStaleError("内容已更新，请确认最新版本")
@@ -423,7 +437,7 @@ def user_decision_requirement(
         # Approval changes the artifact frontmatter SHA but not its reviewed version.
         state = UserDecisionState.CONSUMED.value
         decision_id = record.decision_id
-    elif not _matches_snapshot(record, path=path, artifact_sha256=artifact_sha256, version=version):
+    elif not _matches_snapshot(workspace, record, path=path, artifact_sha256=artifact_sha256, version=version):
         state = "stale"
         decision_id = record.decision_id
     else:

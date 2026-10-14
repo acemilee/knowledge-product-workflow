@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from knowledge_product_workflow.chapter_compliance import ChapterCompliance, compliance_path
+from knowledge_product_workflow.claim_classification import factual_claim_ids
 from knowledge_product_workflow.content_quality import high_risk_factual_lines
 from knowledge_product_workflow.quality import QualityFinding, Severity
 from knowledge_product_workflow.workflows.authoring import require_current_chapter_contract
@@ -61,7 +62,10 @@ def validate_undeclared_high_risk_claims(
         record = ChapterCompliance.model_validate_json(record_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         record = None
-    declared_anchors = set(record.claim_locations.values()) if record is not None else set()
+    factual = factual_claim_ids(workspace, dict.fromkeys(chapter.claim_ids, ""))
+    declared_anchors = {
+        anchor for claim_id, anchor in record.claim_locations.items() if claim_id in factual
+    } if record is not None else set()
     contexts = _heading_contexts(body)
     findings: list[QualityFinding] = []
     for line_number, _ in candidates:

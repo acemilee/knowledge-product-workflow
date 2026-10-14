@@ -7,7 +7,8 @@ import os
 import re
 import subprocess
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
@@ -16,6 +17,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 from pypdf import PdfReader
 
+from knowledge_product_workflow.atomic_files import replace_file
 from knowledge_product_workflow.callouts import (
     CalloutFormatError,
     reader_component_leaks,
@@ -31,6 +33,8 @@ from knowledge_product_workflow.presentation import (
     LEGACY_PRESENTATION_PROFILE_ID,
     PRESENTATION_PROFILE_ID,
     PUBLICATION_METADATA_FILENAME,
+    PUBLICATION_PROFILE_FILENAME,
+    V5_PRESENTATION_PROFILE_ID,
     PublicationMetadata,
     load_or_create_publication_metadata,
     publication_profile_path,
@@ -62,10 +66,9 @@ _PDF_RENDER_LOG_FILENAME = "pdf-render.log"
 _PDF_OVERFLOW_PATTERNS = ("Overfull \\hbox", "Overfull \\vbox")
 _BOOK_INPUT_MANIFEST_FILENAME = "book-input-manifest.json"
 _RELEASE_MANIFEST_SCHEMA_VERSION = 2
-_ASSET_REFERENCE = re.compile(r"!\[[^\]]*\]\((?P<target>assets/[^)\s]+)")
+_ASSET_REFERENCE = re.compile(r"!\[[^\]]*\]\((?P<target>[^)\s]+)")
 _PDF_LAYOUT_MARKERS = (
     "papersize: a4",
-    "geometry: left=16mm,right=16mm,top=18mm,bottom=18mm",
     "documentclass: extreport",
 )
 _PDF_COVER_MARKERS = (
@@ -76,9 +79,6 @@ _PDF_COVER_MARKERS = (
 _PDF_TOC_MARKERS = ("toc: true", "toc-title: 目录", "toc-own-page: true", _PDF_TOC_FILE)
 _PDF_CHINESE_STYLE_MARKERS = (
     "pdf-engine: xelatex",
-    "CJKmainfont: Microsoft YaHei",
-    "mainfont: TeX Gyre Termes",
-    "monofont: Consolas",
     "include-in-header:",
     _PDF_STYLE_FILE,
     _PDF_COMPONENTS_FILE,
@@ -171,25 +171,64 @@ def _existing_files(paths: Iterable[Path]) -> list[Path]:
 
 
 def _reader_asset_paths(workspace: Workspace, markdown: str) -> list[Path]:
+    from knowledge_product_workflow.diagrams import (
+        DiagramManifest,
+        _diagram_theme,
+        _replace_visible_image_references,
+        diagram_manifest_path,
+    )
+
     paths: list[Path] = []
-    for match in _ASSET_REFERENCE.finditer(markdown):
-        target = Path(match.group("target"))
-        candidate = workspace.root / target
-        if candidate.is_file() and candidate not in paths:
+    paired_assets_required = _diagram_theme(workspace)[0] == PRESENTATION_PROFILE_ID
+
+    def collect(match: re.Match[str]) -> str:
+        stored_target = match.group("target")
+        # New reader links are relative to delivery/book.md; historical source
+        # references remain root-relative and are never rewritten in place.
+        target = stored_target.removeprefix("../")
+        relative = PurePosixPath(target)
+        if (not target.startswith("assets/") or "\\" in target
+                or relative.as_posix() != target
+                or any(part in {".", ".."} for part in relative.parts)):
+            raise ValueError(f"读者图链不是受控资产相对路径：{stored_target}")
+        candidate = workspace.root.joinpath(*relative.parts)
+        if (not candidate.resolve().is_relative_to((workspace.root / "assets").resolve())
+                or not candidate.resolve().is_relative_to(workspace.root.resolve())):
+            raise ValueError(f"读者图链越出工作区资产目录：{stored_target}")
+        if not candidate.is_file():
+            raise ValueError(f"读者图链资产不存在：{stored_target}")
+        if candidate not in paths:
             paths.append(candidate)
-        if target.parent.as_posix() == "assets/figures":
-            diagram_id = target.stem
+        if relative.parent.as_posix() == "assets/figures":
+            diagram_id = relative.stem
+            if paired_assets_required:
+                manifest_path = diagram_manifest_path(workspace, diagram_id)
+                try:
+                    manifest = DiagramManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+                    for suffix, digest in (("png", manifest.png_sha256), ("pdf", manifest.pdf_sha256)):
+                        paired = workspace.root / "assets/figures" / f"{diagram_id}.{suffix}"
+                        if (not paired.resolve().is_relative_to(workspace.root.resolve())
+                                or not paired.is_file() or _sha256(paired) != digest):
+                            raise ValueError("双格式资产未绑定当前清单")
+                except (OSError, ValueError) as error:
+                    raise ValueError(f"DIAGRAM_ASSET_UNBOUND: {diagram_id} 的读者资产未绑定当前清单：{error}") from error
             paths.extend(
                 _existing_files(
                     (
                         workspace.root / "assets" / "figures" / f"{diagram_id}.png",
+                        workspace.root / "assets" / "figures" / f"{diagram_id}.pdf",
                         workspace.root / "runs" / "diagrams" / f"{diagram_id}.spec.json",
+                        workspace.root / "runs" / "diagrams" / f"{diagram_id}.input.json",
                         workspace.root / "runs" / "diagrams" / f"{diagram_id}.d2",
                         workspace.root / "runs" / "diagrams" / f"{diagram_id}.svg",
                         workspace.root / "runs" / "diagrams" / f"{diagram_id}.json",
+                        workspace.root / "runs" / "illustrations" / "asset-checks" / f"{diagram_id}.json",
                     )
                 )
             )
+        return match.group(0)
+
+    _replace_visible_image_references(markdown, _ASSET_REFERENCE, collect)
     return list(dict.fromkeys(paths))
 
 
@@ -202,6 +241,7 @@ def _book_input_paths(workspace: Workspace, chapter_paths: list[Path], markdown:
         workspace.root / "chapters" / "chapter-01-sample.approved",
         workspace.root / "research" / "source-ledger.jsonl",
         workspace.root / "research" / "assumption-ledger.jsonl",
+        workspace.root / "research" / "claim-classifications.jsonl",
         workspace.root / "delivery" / "book.md",
         qmd_path,
         workspace.root / "delivery" / PUBLICATION_METADATA_FILENAME,
@@ -306,12 +346,20 @@ def _chapter_bodies(chapter_paths: list[Path]) -> list[str]:
     return [parse_markdown_artifact(path.read_text(encoding="utf-8"))[1].strip() for path in chapter_paths]
 
 
-def _reader_book_from_bodies(bodies: list[str]) -> str:
-    return "\n\n".join(render_reader_markdown(body).strip() for body in bodies) + "\n"
+def _reader_book_from_bodies(bodies: list[str], workspace: Workspace) -> str:
+    from knowledge_product_workflow.diagrams import reader_png_references
+
+    markdown = "\n\n".join(render_reader_markdown(body).strip() for body in bodies) + "\n"
+    markdown = reader_png_references(workspace, markdown)
+    _reader_asset_paths(workspace, markdown)
+    return markdown
 
 
-def _qmd_book_from_bodies(bodies: list[str]) -> str:
-    return "\n\n".join(render_qmd_markdown(body).strip() for body in bodies) + "\n"
+def _qmd_book_from_bodies(bodies: list[str], workspace: Workspace) -> str:
+    from knowledge_product_workflow.diagrams import qmd_figure_references
+
+    markdown = "\n\n".join(render_qmd_markdown(body).strip() for body in bodies) + "\n"
+    return qmd_figure_references(workspace, markdown)
 
 
 def delivery_component_leak_findings(workspace: Workspace, *, include_pdf: bool) -> list[QualityFinding]:
@@ -381,10 +429,27 @@ def assemble_book(workspace: Workspace) -> Path:
     before = {path: _digest_if_file(path) for path in render_contract_paths}
     prior_input_manifest = _read_book_input_manifest(book_input_manifest_path(workspace))
     try:
-        markdown = _reader_book_from_bodies(bodies)
-        qmd_markdown = _qmd_book_from_bodies(bodies)
+        markdown = _reader_book_from_bodies(bodies, workspace)
+        qmd_markdown = _qmd_book_from_bodies(bodies, workspace)
     except CalloutFormatError as error:
         raise ValueError(f"读者提示框结构无效，无法安全汇编：{error}") from error
+    # Resolve the cover contract before replacing the canonical manuscript.
+    from knowledge_product_workflow.presentation import (
+        load_or_create_publication_profile,
+        validate_cover_contract,
+    )
+
+    constraints = _constraints_for_workspace(workspace)
+    title = _book_title(workspace, markdown)
+    brief_path = workspace.root / "planning" / "product-brief.md"
+    overrides = None
+    if brief_path.is_file():
+        _, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+        overrides = parse_presentation_overrides(brief_body)
+    profile = load_or_create_publication_profile(
+        workspace, language=constraints.language if constraints else "zh-CN", overrides=overrides
+    )
+    validate_cover_contract(profile, title)
     output.write_text(markdown, encoding="utf-8")
     qmd_path = create_quarto_source(workspace, output, qmd_markdown=qmd_markdown)
     current_input_manifest = _build_book_input_manifest(workspace, chapter_paths, markdown, qmd_path)
@@ -404,6 +469,82 @@ def assemble_book(workspace: Workspace) -> Path:
         workspace, chapter_paths, markdown, qmd_path, manifest=current_input_manifest
     )
     workspace.append_event("book_assembled", {"chapter_count": len(chapter_paths)})
+    return output
+
+
+def render_review_preview(workspace: Workspace) -> Path:
+    """Render current body snapshots without approving or replacing delivery."""
+    import json
+    import shutil
+
+    from knowledge_product_workflow.chapter_compliance import validate_current_chapter_compliance
+    from knowledge_product_workflow.content_checkpoint import FIGURE, current_content_checkpoint
+    from knowledge_product_workflow.workflows.authoring import require_current_chapter_contract
+
+    contracts = sorted((workspace.root / "chapters").glob("chapter-[0-9][0-9]-contract.md"))
+    if not contracts:
+        raise ValueError("诊断预览需要当前批准的章节合约")
+    bodies, pending, inputs = [], {}, {}
+    for path in contracts:
+        number = int(path.name.split("-")[1])
+        require_current_chapter_contract(workspace, number)
+        source = workspace.root / "chapters" / f"chapter-{number:02d}.md"
+        if not source.is_file():
+            raise ValueError(f"第{number}章正文尚未就绪，不能称为完整诊断预览")
+        checkpoint = current_content_checkpoint(workspace, number)
+        if checkpoint is None:
+            findings = validate_current_chapter_compliance(workspace, source)
+            if any(f.severity.value == "blocker" for f in findings):
+                raise ValueError(f"第{number}章缺少当前正文检查点/完整合规提交")
+        _, body = parse_markdown_artifact(source.read_text(encoding="utf-8"))
+        for match in FIGURE.finditer(body):
+            diagram_id = match.group("id")
+            for relative in (f"assets/figures/{diagram_id}.pdf", f"assets/figures/{diagram_id}.png",
+                             f"runs/diagrams/{diagram_id}.input.json", f"runs/diagrams/{diagram_id}.json",
+                             f"runs/illustrations/asset-checks/{diagram_id}.json"):
+                artifact = workspace.root / relative
+                inputs[relative] = _sha256(artifact) if artifact.is_file() else "missing"
+        failed = set(checkpoint["pending_assets"]) if checkpoint else set()
+        pending[str(number)] = sorted(failed)
+        body = FIGURE.sub(lambda m, deferred=failed: ("\n::: {.kp-note}\n插图尚未通过，待原任务修复；此处仅供核验正文与图文位置。\n:::\n"
+                                    if m.group("id") in deferred else m.group(0)), body)
+        bodies.append(body)
+        inputs[source.relative_to(workspace.root).as_posix()] = _sha256(source)
+        inputs[path.relative_to(workspace.root).as_posix()] = _sha256(path)
+    profile_path = workspace.root / "planning" / PUBLICATION_PROFILE_FILENAME
+    inputs[profile_path.relative_to(workspace.root).as_posix()] = _sha256(profile_path)
+    fingerprint = hashlib.sha256(json.dumps({"inputs": inputs, "pending": pending}, sort_keys=True).encode()).hexdigest()
+    preview = workspace.root / "runs/review-preview" / fingerprint
+    output = preview / "book.pdf"
+    if output.is_file() and (preview / "preview-manifest.json").is_file():
+        cached = json.loads((preview / "preview-manifest.json").read_text(encoding="utf-8"))
+        if cached.get("pdf_sha256") == _sha256(output):
+            return output
+    shadow = Workspace(preview)
+    for directory in ("planning", "delivery", "runs", "chapters", "assets/figures"):
+        (preview / directory).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(workspace.root / "planning/product-brief.md", preview / "planning/product-brief.md")
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    profile["footer_label"] = "诊断预览 · 未发布"
+    (preview / "planning" / PUBLICATION_PROFILE_FILENAME).write_text(
+        yaml.safe_dump(profile, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    for body in bodies:
+        for match in FIGURE.finditer(body):
+            for suffix in (".pdf", ".png"):
+                asset = workspace.root / "assets/figures" / (match.group("id") + suffix)
+                if not asset.is_file():
+                    raise ValueError(f"诊断预览中非待办图缺少资产：{asset.name}")
+                shutil.copy2(asset, preview / "assets/figures" / asset.name)
+    markdown = preview / "delivery/book.md"
+    markdown.write_text(_reader_book_from_bodies(bodies, workspace), encoding="utf-8")
+    source = create_quarto_source(shadow, markdown, qmd_markdown=_qmd_book_from_bodies(bodies, workspace))
+    pdf = render_pdf(source, preview / "delivery", shadow)
+    shutil.copy2(pdf, output)
+    (preview / "preview-manifest.json").write_text(json.dumps({
+        "schema_version": 1, "preview_only": True, "publishable": False, "input_fingerprint": fingerprint,
+        "inputs": inputs, "pending_assets": pending, "pdf_sha256": _sha256(output)
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    workspace.append_event("review_preview_rendered", {"path": output.relative_to(workspace.root).as_posix(), "publishable": False})
     return output
 
 
@@ -430,11 +571,35 @@ def _book_title(workspace: Workspace, markdown: str) -> str:
     return _title_from_markdown(markdown) or workspace.root.name
 
 
-def _template_text(filename: str) -> str:
+def _template_text(filename: str, profile_id: str | None = None, reader_layout_revision: int = 2) -> str:
     asset = files("knowledge_product_workflow")
-    for part in (*_PDF_TEMPLATE_DIRECTORY, filename):
+    parts = (*_PDF_TEMPLATE_DIRECTORY, "v6", filename) if profile_id == PRESENTATION_PROFILE_ID else (*_PDF_TEMPLATE_DIRECTORY, filename)
+    if profile_id == PRESENTATION_PROFILE_ID and reader_layout_revision == 1 and filename in {
+        _PDF_STYLE_FILE, _PDF_COMPONENTS_FILE, _PDF_COMPONENTS_FILTER_FILE,
+    }:
+        parts = (*_PDF_TEMPLATE_DIRECTORY, "v6", "layout1", filename)
+    for part in parts:
         asset = asset.joinpath(part)
     return asset.read_text(encoding="utf-8")
+
+
+def pdf_template_input_drift(workspace: Workspace) -> list[str]:
+    """Read-only check of copied renderer resources against this runtime package."""
+    delivery = workspace.root / "delivery"
+    metadata_path = delivery / PUBLICATION_METADATA_FILENAME
+    if not metadata_path.is_file():
+        return []  # Existing missing-metadata/assembly gates own this case.
+    try:
+        metadata = PublicationMetadata.model_validate(yaml.safe_load(metadata_path.read_text(encoding="utf-8")))
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        return [PUBLICATION_METADATA_FILENAME]
+    stale = []
+    for name in (_PDF_STYLE_FILE, _PDF_TOC_FILE, _PDF_COMPONENTS_FILE, _PDF_COMPONENTS_FILTER_FILE):
+        path = delivery / name
+        expected = _template_text(name, metadata.profile_id, metadata.reader_layout_revision)
+        if not path.is_file() or not path.read_text(encoding="utf-8").endswith(expected):
+            stale.append(name)
+    return stale
 
 
 def _style_token_prefix(metadata: PublicationMetadata) -> str:
@@ -469,6 +634,7 @@ def _style_token_prefix(metadata: PublicationMetadata) -> str:
             f"\\providecommand{{\\KnowledgeProductSectionLeading}}{{{section_leading}}}",
             f"\\providecommand{{\\KnowledgeProductLineSpread}}{{{line_spread}}}",
             f"\\providecommand{{\\KnowledgeProductParagraphSkip}}{{{paragraph_skip}}}",
+            f"\\providecommand{{\\KnowledgeProductFontPolicy}}{{{metadata.font_policy}}}",
             f"\\providecommand{{\\KnowledgeProductRunningHeader}}{{{running_header}}}",
             f"\\providecommand{{\\KnowledgeProductKeyFrameColor}}{{{key_frame}}}",
             f"\\providecommand{{\\KnowledgeProductSourceFrameColor}}{{{source_frame}}}",
@@ -478,6 +644,8 @@ def _style_token_prefix(metadata: PublicationMetadata) -> str:
 
 
 def _geometry_for_publication(metadata: PublicationMetadata) -> str:
+    if metadata.profile_id == PRESENTATION_PROFILE_ID:
+        return "left=13mm,right=13mm,top=18mm,bottom=18mm"
     if metadata.line_length == "compact":
         return "left=22mm,right=22mm,top=18mm,bottom=18mm"
     return "left=16mm,right=16mm,top=18mm,bottom=18mm"
@@ -488,18 +656,21 @@ def _write_pdf_contract_assets(workspace: Workspace, metadata: PublicationMetada
     style_path = delivery / _PDF_STYLE_FILE
     cover_path = delivery / _PDF_COVER_FILE
     style_path.write_text(
-        _style_token_prefix(metadata) + _template_text(_PDF_STYLE_FILE), encoding="utf-8"
+        _style_token_prefix(metadata) + _template_text(_PDF_STYLE_FILE, metadata.profile_id, metadata.reader_layout_revision), encoding="utf-8"
     )
-    (delivery / _PDF_TOC_FILE).write_text(_template_text(_PDF_TOC_FILE), encoding="utf-8")
+    (delivery / _PDF_TOC_FILE).write_text(_template_text(_PDF_TOC_FILE, metadata.profile_id), encoding="utf-8")
     (delivery / _PDF_COMPONENTS_FILE).write_text(
-        _template_text(_PDF_COMPONENTS_FILE), encoding="utf-8"
+        _template_text(_PDF_COMPONENTS_FILE, metadata.profile_id, metadata.reader_layout_revision), encoding="utf-8"
     )
     (delivery / _PDF_COMPONENTS_FILTER_FILE).write_text(
-        _template_text(_PDF_COMPONENTS_FILTER_FILE), encoding="utf-8"
+        _template_text(_PDF_COMPONENTS_FILTER_FILE, metadata.profile_id, metadata.reader_layout_revision), encoding="utf-8"
     )
     cover_prefix = (
         "% This file is generated by the workflow; do not hand-edit it.\n"
         f"\\providecommand{{\\KnowledgeProductTitle}}{{{metadata.title.translate(_TEX_ESCAPE)}}}\n"
+        "\\providecommand{\\KnowledgeProductCoverTitle}{"
+        + r"\\".join(line.translate(_TEX_ESCAPE) for line in (metadata.cover_title_lines or [metadata.title]))
+        + "}\n"
         f"\\providecommand{{\\KnowledgeProductSubtitle}}{{{metadata.subtitle.translate(_TEX_ESCAPE)}}}\n"
         f"\\providecommand{{\\KnowledgeProductAudience}}{{{metadata.audience_label.translate(_TEX_ESCAPE)}}}\n"
         f"\\providecommand{{\\KnowledgeProductEdition}}{{{metadata.edition_label.translate(_TEX_ESCAPE)}}}\n"
@@ -508,7 +679,21 @@ def _write_pdf_contract_assets(workspace: Workspace, metadata: PublicationMetada
         f"\\providecommand{{\\KnowledgeProductFooterLabel}}{{{metadata.footer_label.translate(_TEX_ESCAPE)}}}\n"
         f"\\providecommand{{\\KnowledgeProductCopyright}}{{{metadata.copyright_line.translate(_TEX_ESCAPE)}}}\n"
     )
-    cover_path.write_text(cover_prefix + _template_text(_PDF_COVER_FILE), encoding="utf-8")
+    cover_filename = _PDF_COVER_FILE
+    if metadata.cover_layout_revision == 2:
+        if not metadata.cover_summary_zh:
+            raise ValueError("封面布局2须锁定非空中文梗概；先通过出版预览确认")
+        if not re.fullmatch(r"©\s+\d{4}\s+\S.*", metadata.copyright_line):
+            raise ValueError("新封面版权行须由用户确认：© 年份 署名")
+        cover_filename = "knowledge-book-cover-v2.tex"
+        values = {"CoverSummaryZh": metadata.cover_summary_zh, "CoverSummaryEn": metadata.cover_summary_en or "",
+                  "CoverMonth": metadata.publication_date.strftime("%Y年%m月"),
+                  "CoverNote": metadata.cover_content_note or ""}
+        for name,value in values.items():
+            cover_prefix += f"\\providecommand{{\\KnowledgeProduct{name}}}{{{value.translate(_TEX_ESCAPE)}}}\n"
+        focus = "\\quad ".join("\\KpInlineCode{" + item.translate(_TEX_ESCAPE) + "}" for item in metadata.cover_focus_items)
+        cover_prefix += "\\providecommand{\\KnowledgeProductCoverFocus}{" + focus + "}\n"
+    cover_path.write_text(cover_prefix + _template_text(cover_filename, metadata.profile_id), encoding="utf-8")
 
 
 def missing_pdf_source_contracts(qmd_path: Path) -> list[str]:
@@ -516,8 +701,6 @@ def missing_pdf_source_contracts(qmd_path: Path) -> list[str]:
     source = qmd_path.read_text(encoding="utf-8") if qmd_path.is_file() else ""
     missing: list[str] = []
     font_match = re.search(r"(?m)^\s*fontsize:\s*(?P<size>\d+)pt\s*$", source)
-    if not all(marker in source for marker in _PDF_LAYOUT_MARKERS) or font_match is None:
-        missing.append("LAYOUT_CONTRACT_MISMATCH")
     publication_path = qmd_path.parent / PUBLICATION_METADATA_FILENAME
     try:
         publication = PublicationMetadata.model_validate(
@@ -525,6 +708,9 @@ def missing_pdf_source_contracts(qmd_path: Path) -> list[str]:
         )
     except (OSError, TypeError, ValueError, yaml.YAMLError):
         publication = None
+    expected_geometry = _geometry_for_publication(publication) if publication is not None else "left=16mm,right=16mm,top=18mm,bottom=18mm"
+    if not all(marker in source for marker in _PDF_LAYOUT_MARKERS) or f"geometry: {expected_geometry}" not in source or font_match is None:
+        missing.append("LAYOUT_CONTRACT_MISMATCH")
     if publication is not None and (
         font_match is None
         or int(font_match.group("size")) != publication.body_font_size
@@ -533,7 +719,8 @@ def missing_pdf_source_contracts(qmd_path: Path) -> list[str]:
         missing.append("PDF_FONT_SIZE_CONTRACT_FAILED")
     cover_path = qmd_path.parent / _PDF_COVER_FILE
     cover = cover_path.read_text(encoding="utf-8") if cover_path.is_file() else ""
-    if not all(marker in source for marker in _PDF_COVER_MARKERS) or _PDF_COVER_MARKER not in cover:
+    marker_version = "v6" if publication is not None and publication.profile_id == PRESENTATION_PROFILE_ID else "v4"
+    if not all(marker in source for marker in _PDF_COVER_MARKERS) or f"% knowledge-product-pdf-{marker_version}-cover" not in cover:
         missing.append("PDF_COVER_CONTRACT_MISSING")
     if not all(marker in source for marker in _PDF_TOC_MARKERS):
         missing.append("PDF_TOC_CONTRACT_MISSING")
@@ -545,16 +732,34 @@ def missing_pdf_source_contracts(qmd_path: Path) -> list[str]:
     toc = toc_path.read_text(encoding="utf-8") if toc_path.is_file() else ""
     components = components_path.read_text(encoding="utf-8") if components_path.is_file() else ""
     component_filter = filter_path.read_text(encoding="utf-8") if filter_path.is_file() else ""
+    if (marker_version == "v6" and publication.reader_layout_revision == 2
+            and publication.font_policy == "preferred" and not all(item in style for item in (
+                r"\setmainfont[Scale=1]{Inter}", r"\setmonofont[Scale=0.99254]{JetBrains Mono}",
+                r"\setCJKmainfont[Scale=1,BoldFont={PingFang SC Semibold}]{PingFang SC}",
+                r"\setmathfont[Scale=1]{Latin Modern Math}",
+                r"\unimathsetup{mathrm=sym,mathit=sym,mathbf=sym}",
+                r"\setoperatorfont{\symup}",
+                r"\XeTeXgenerateactualtext=1",
+                r"\xeCJKsetup{CJKecglue = {\hskip .25em}, xCJKecglue = false}",
+            ))):
+        missing.append("PDF_DEFAULT_FONT_CONTRACT_STALE")
     if (
         not all(marker in source for marker in _PDF_CHINESE_STYLE_MARKERS)
-        or _PDF_STYLE_MARKER not in style
-        or _PDF_TOC_MARKER not in toc
-        or _PDF_COMPONENTS_MARKER not in components
-        or _PDF_COMPONENTS_FILTER_MARKER not in component_filter
-        or _PDF_DIAGRAM_LAYOUT_MARKER not in component_filter
+        or (marker_version == "v4" and not all(item in source for item in ("mainfont: TeX Gyre Termes", "monofont: Consolas", "CJKmainfont: Microsoft YaHei")))
+        or (marker_version == "v6" and ("kp-font-role-policy:" not in source or "SimHei" not in style))
+        or f"% knowledge-product-pdf-{marker_version}-style" not in style
+        or f"% knowledge-product-pdf-{marker_version}-toc" not in toc
+        or f"% knowledge-product-pdf-{marker_version}-components" not in components
+        or f"-- knowledge-product-pdf-{marker_version}-components-filter" not in component_filter
+        or f"-- knowledge-product-pdf-{marker_version}-diagram-layout" not in component_filter
     ):
         missing.append("PDF_CHINESE_STYLE_CONTRACT_MISSING")
-    if _PDF_INLINE_CODE_MARKER not in components or "\\renewcommand{\\texttt}" not in components:
+    inline_trigger = "\\renewcommand{\\texttt}" in components or (
+        "function Code(" in component_filter and
+        ("KpInlineCode" in component_filter or
+         ("KpCodeGlyph" in component_filter and r"\newcommand{\KpCodeGlyph}" in components))
+    )
+    if f"% knowledge-product-pdf-{marker_version}-inline-code" not in components or not inline_trigger:
         missing.append("PDF_INLINE_CODE_STYLE_CONTRACT_MISSING")
     expected_profile = publication.profile_id if publication is not None else None
     if expected_profile is None or expected_profile not in source:
@@ -608,6 +813,7 @@ def create_quarto_source(
                 "geometry": _geometry_for_publication(publication_metadata),
                 "documentclass": "extreport",
                 "keep-tex": True,
+                "latex-auto-install": False,
             }
         },
         "toc": True,
@@ -620,13 +826,17 @@ def create_quarto_source(
         "kp-pdf-profile": publication_metadata.profile_id,
         "resource-path": [".."],
         "lang": constraints.language if constraints else "zh-CN",
-        "mainfont": "TeX Gyre Termes",
+        "mainfont": "TeX Gyre Heros" if publication_metadata.profile_id == PRESENTATION_PROFILE_ID else "TeX Gyre Termes",
         "sansfont": "TeX Gyre Heros",
         "monofont": "Consolas",
         "CJKmainfont": "Microsoft YaHei",
         "CJKsansfont": "Microsoft YaHei",
         "CJKmonofont": "Microsoft YaHei",
     }
+    if publication_metadata.profile_id == PRESENTATION_PROFILE_ID:
+        for name in ("mainfont", "sansfont", "monofont", "CJKmainfont", "CJKsansfont", "CJKmonofont"):
+            metadata.pop(name)
+        metadata["kp-font-role-policy"] = publication_metadata.font_policy
     source = f"---\n{yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False)}---\n{rendered_markdown}"
     qmd_path.write_text(source, encoding="utf-8")
     return qmd_path
@@ -635,6 +845,40 @@ def create_quarto_source(
 def count_pdf_pages(pdf_path: Path) -> int:
     """Read the actual page count from a valid rendered PDF."""
     return len(PdfReader(pdf_path).pages)
+
+
+def pdf_body_page_numbers(workspace: Workspace, pdf_path: Path) -> list[int]:
+    """Locate the first actual chapter destination rather than subtracting two pages."""
+    chapters = sorted((workspace.root / "chapters").glob("chapter-[0-9][0-9].md"))
+    if chapters:
+        body = parse_markdown_artifact(chapters[0].read_text(encoding="utf-8"))[1]
+    else:
+        book = workspace.root / "delivery" / "book.md"
+        body = book.read_text(encoding="utf-8") if book.is_file() else ""
+    match = _TITLE.search(body)
+    if match is None:
+        raise ValueError("无法定位当前书稿的首章标题")
+
+    def normalize(title: str) -> str:
+        return re.sub(r"^\d+(?:\.\d+)*\.?\s+", "", title).strip()
+
+    expected = normalize(match.group(1))
+    reader = PdfReader(pdf_path)
+
+    def locate(items) -> int | None:
+        for item in items:
+            if isinstance(item, list):
+                result = locate(item)
+                if result is not None:
+                    return result
+            elif isinstance(item, dict) and normalize(str(item.get("/Title", ""))) == expected:
+                return reader.get_destination_page_number(item)
+        return None
+
+    start = locate(reader.outline)
+    if start is None:
+        raise ValueError("PDF 书签没有与当前首章匹配的实际页目标；不能猜测正文页数")
+    return list(range(start + 1, len(reader.pages) + 1))
 
 
 def _count_outline_nodes(nodes: object) -> int:
@@ -706,6 +950,59 @@ def pdf_font_size_contract_findings(workspace: Workspace) -> list[QualityFinding
     return []
 
 
+@contextmanager
+def _quarto_paths(
+    qmd_path: Path, output_dir: Path, cwd: Path, quarto_path: Path, workspace: Workspace | None
+) -> Iterator[tuple[Path, Path, Path, dict[str, str]]]:
+    """Give Windows Quarto ASCII paths when its Lua filter cannot open Unicode paths."""
+    environment = os.environ.copy()
+    environment["QUARTO_TEXLIVE_AUTO_INSTALL"] = "false"
+    configured_alias = environment.get("KP_WORKSPACE_ASCII_ALIAS")
+    physical_root = environment.get("KP_WORKSPACE_PHYSICAL_ROOT")
+    if configured_alias or physical_root:
+        if not configured_alias or not physical_root or not configured_alias.isascii():
+            raise RuntimeError("Quarto工作区路径别名配置不完整或非ASCII。")
+        alias = Path(configured_alias)
+        physical = Path(physical_root).resolve()
+        if not alias.is_absolute() or alias.resolve() != physical:
+            raise RuntimeError("Quarto工作区路径别名与实际目录不一致。")
+        relative_cwd = cwd.relative_to(physical)
+        mapped_cwd = alias / relative_cwd
+        local_temp = mapped_cwd / "runs/quarto-temp"
+        local_temp.mkdir(parents=True, exist_ok=True)
+        environment["TEMP"] = environment["TMP"] = str(local_temp)
+        yield alias / qmd_path.relative_to(physical), alias / output_dir.relative_to(physical), mapped_cwd, environment
+        return
+    if workspace is None or os.name != "nt" or str(cwd).isascii() or not quarto_path.is_file():
+        yield qmd_path, output_dir, cwd, environment
+        return
+
+    for letter in "ZYXWVUTSRQPONMLKJIH":
+        drive = f"{letter}:"
+        if Path(f"{drive}\\").exists():
+            continue
+        mapped = subprocess.run(
+            ["subst", drive, str(cwd)], capture_output=True, timeout=5, check=False
+        )
+        if mapped.returncode != 0:
+            continue
+        try:
+            alias = Path(f"{drive}\\")
+            local_temp = cwd / "runs" / "quarto-temp"
+            local_temp.mkdir(parents=True, exist_ok=True)
+            environment["TEMP"] = str(alias / "runs" / "quarto-temp")
+            environment["TMP"] = environment["TEMP"]
+            yield alias / qmd_path.relative_to(cwd), alias / output_dir.relative_to(cwd), alias, environment
+        finally:
+            removed = subprocess.run(
+                ["subst", drive, "/d"], capture_output=True, timeout=5, check=False
+            )
+            if removed.returncode != 0:
+                raise RuntimeError(f"Quarto 临时路径 {drive} 未能撤销。")
+        return
+    raise RuntimeError("Quarto 无法为含非 ASCII 字符的书稿路径分配临时路径。")
+
+
 def render_pdf(qmd_path: Path, output_dir: Path, workspace: Workspace | None = None) -> Path:
     """Render a Quarto source file to PDF, failing clearly when Quarto is unavailable."""
     qmd_path = qmd_path.expanduser().resolve()
@@ -726,6 +1023,16 @@ def render_pdf(qmd_path: Path, output_dir: Path, workspace: Workspace | None = N
             workspace.append_event("pdf_render_failed", {"reason": "qmd_missing"})
         raise FileNotFoundError(f"{QMD_MISSING}：{qmd_path}")
     qmd_source = qmd_path.read_text(encoding="utf-8")
+    style_file = qmd_path.parent / _PDF_STYLE_FILE
+    if ("kp-font-role-policy: preferred" in qmd_source and style_file.is_file()
+            and "knowledge-product-pdf-v6-reference-fonts" in style_file.read_text(encoding="utf-8")):
+        from knowledge_product_workflow.pdf_fonts import probe_preferred_fonts
+        missing = [item["font"] for item in probe_preferred_fonts(cwd).values() if not item["available"]]
+        if missing:
+            if workspace is not None:
+                workspace.append_event("pdf_render_failed", {"reason": "preferred_fonts_missing", "fonts": missing})
+            raise RuntimeError("默认字体缺失或探测不可用：" + "、".join(missing)
+                               + "；请准备可用字体后运行kp doctor。若接受兼容字体，须显式确认font_policy=fallback；不会静默替换。")
     qmd_leaks = reader_component_leaks(qmd_source, allow_fenced_divs=True)
     if qmd_leaks:
         if workspace is not None:
@@ -740,32 +1047,56 @@ def render_pdf(qmd_path: Path, output_dir: Path, workspace: Workspace | None = N
             )
         raise RuntimeError(f"{QUARTO_UNAVAILABLE}；请运行 kp doctor 查看已检查的位置。")
     render_log = ""
-    command = [str(quarto.path), "render", str(qmd_path), "--to", "pdf", "--output-dir", str(output_dir)]
-    log_prefix = "\n".join(
-        (
-            f"命令：{subprocess.list2cmdline(command)}",
-            f"有效工作目录：{cwd}",
-            f"预期输出：{expected_output}",
-            "Quarto 输出：",
-        )
-    )
+    log_prefix = ""
+    previous_pdf = expected_output.read_bytes() if expected_output.is_file() else None
+    def restore_failed_output():
+        if previous_pdf is None:
+            expected_output.unlink(missing_ok=True)
+        else:
+            restored = expected_output.with_name(f".{expected_output.name}.{uuid.uuid4().hex}.restore")
+            try:
+                restored.write_bytes(previous_pdf)
+                try:
+                    replace_file(restored, expected_output)
+                except PermissionError as error:
+                    raise RuntimeError(f"旧PDF恢复被文件锁阻断；安全副本保留在{restored}，关闭占用后恢复") from error
+            finally:
+                if not restored.exists() or (expected_output.is_file() and expected_output.read_bytes() == previous_pdf):
+                    restored.unlink(missing_ok=True)
     try:
-        environment = os.environ.copy()
-        environment["QUARTO_TEXLIVE_AUTO_INSTALL"] = "false"
-        completed = subprocess.run(
-            command,
-            check=True,
-            timeout=120,
-            env=environment,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        with _quarto_paths(qmd_path, output_dir, cwd, quarto.path, workspace) as (
+            render_source,
+            render_output_dir,
+            render_cwd,
+            environment,
+        ):
+            from .quarto_runtime import quarto_command
+            arguments = ["render", str(render_source), "--to", "pdf", "--output-dir", str(render_output_dir)]
+            with quarto_command(quarto.path, arguments, render_cwd, environment) as (command, environment):
+                log_prefix = "\n".join(
+                    (
+                        f"命令：{subprocess.list2cmdline(command)}",
+                        f"有效工作目录：{render_cwd}",
+                        f"预期输出：{expected_output}",
+                        "Quarto 输出：",
+                    )
+                )
+                completed = subprocess.run(
+                    command,
+                    check=True,
+                    timeout=60,
+                    env=environment,
+                    cwd=str(render_cwd),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
         render_log = log_prefix + "\n" + (completed.stdout or "") + (completed.stderr or "")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
+        restore_failed_output()
         render_log = log_prefix + "\n" + (getattr(error, "stdout", "") or "") + (getattr(error, "stderr", "") or "")
+        render_log += f"\n失败原因：{type(error).__name__}: {error}\n"
         if workspace is not None:
             _write_pdf_render_log(workspace, render_log)
         if workspace is not None:
@@ -775,6 +1106,7 @@ def render_pdf(qmd_path: Path, output_dir: Path, workspace: Workspace | None = N
         _write_pdf_render_log(workspace, render_log)
     overflow = [pattern for pattern in _PDF_OVERFLOW_PATTERNS if pattern in render_log]
     if overflow:
+        restore_failed_output()
         if workspace is not None:
             workspace.append_event("pdf_render_failed", {"reason": "tex_overflow", "patterns": overflow})
         raise RuntimeError("PDF 渲染检测到 TeX 版式溢出；请修订表格、代码块或长链接后重新渲染。")
@@ -817,13 +1149,23 @@ def render_pdf(qmd_path: Path, output_dir: Path, workspace: Workspace | None = N
             details = "；".join(finding.message for finding in component_findings + font_findings)
             raise RuntimeError(f"PDF 交付契约失败：{details}")
     if workspace is not None and (workspace.root / "delivery" / PUBLICATION_METADATA_FILENAME).is_file():
+        metadata_path = workspace.root / "delivery" / PUBLICATION_METADATA_FILENAME
+        workspace.append_event(
+            "pdf_compiled",
+            {
+                "pdf": _relative(workspace, expected_output),
+                "pdf_sha256": _sha256(expected_output),
+                "qmd_sha256": _sha256(qmd_path),
+                "publication_metadata_sha256": _sha256(metadata_path),
+            },
+        )
         try:
             preview_path, preview = render_pdf_preview_set(
                 expected_output, workspace.root / "runs" / "pdf-preview"
             )
         except (OSError, RuntimeError, ValueError) as error:
             workspace.append_event("pdf_render_failed", {"reason": "preview_generation_failed"})
-            raise RuntimeError("PDF 渲染后无法生成页面预览集") from error
+            raise RuntimeError(f"PDF 已生成，但页面预览失败：{error}") from error
         workspace.append_event(
             "pdf_preview_generated",
             {
@@ -869,7 +1211,7 @@ def _expected_book_markdown(workspace: Workspace) -> str | None:
     if not chapters:
         return None
     try:
-        return _reader_book_from_bodies(_chapter_bodies(chapters))
+        return _reader_book_from_bodies(_chapter_bodies(chapters), workspace)
     except (OSError, ValueError, CalloutFormatError):
         return None
 
@@ -985,7 +1327,7 @@ def release_readiness_findings(workspace: Workspace) -> list[QualityFinding]:
             )
         )
         return findings
-    if input_manifest.pdf_profile not in {PRESENTATION_PROFILE_ID, LEGACY_PRESENTATION_PROFILE_ID}:
+    if input_manifest.pdf_profile not in {PRESENTATION_PROFILE_ID, V5_PRESENTATION_PROFILE_ID, LEGACY_PRESENTATION_PROFILE_ID}:
         findings.append(
             _release_finding(
                 "RELEASE_BOOK_INPUT_MANIFEST_INVALID",
@@ -1126,6 +1468,9 @@ def refresh_publication_delivery(workspace: Workspace) -> dict[str, Path | bool 
     If no book has been assembled yet, there is nothing to render and the
     normal publication phase will consume the profile later.
     """
+    from knowledge_product_workflow.diagrams import refresh_diagram_theme
+
+    refresh_diagram_theme(workspace)
     existing_book = workspace.root / "delivery" / "book.md"
     if not existing_book.is_file():
         return {"refreshed": False, "markdown": None, "pdf": None, "report": None, "manifest": None}

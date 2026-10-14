@@ -1,0 +1,6 @@
+{
+  "layout_id": "process-overview-2",
+  "grammar": "横向画布内按冻结顺序用三至六个阶段卡片表示一次调用背后的处理。箭头只沿声明的输入输出/职责关系连接，不放条件菱形，不伪造分支、回路或自动重试。图前后配合正文解释阶段与调用的区别。卡片内用母版node/description字高，轮廓与小型线性图标克制一致；不添加未声明编号、工具或步骤。结论置底部浅品牌框，不能为装进一行缩字。",
+  "roles": {"label_line_1": "node", "label_line_2": "description", "caption": "title", "reader_conclusion": "conclusion"},
+  "maximum_nodes": 6
+}

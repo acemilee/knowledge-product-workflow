@@ -265,3 +265,29 @@ def test_all_quality_recovery_stages_authorize_the_status_recommended_command(
         )
         monkeypatch.setattr(runtime, "inspect_workflow", lambda _workspace, status=expected: status)
         assert authorize_command(workspace, command) is expected
+
+
+def test_reopened_chapter_finishes_before_stale_referencing_proofs(tmp_path, monkeypatch):
+    from knowledge_product_workflow.workflows.authoring import (
+        compile_chapter_contracts,
+        create_chapter_draft,
+    )
+    workspace = Workspace.create(tmp_path, "reopened-priority")
+    _approved_blueprint(workspace)
+    compile_chapter_contracts(workspace)
+    create_chapter_draft(workspace, 1)
+    submit_test_chapter(workspace, tmp_path, 1)
+    (workspace.root / "chapters/chapter-01-sample.approved").write_text("approved\n", encoding="utf-8")
+    later = create_chapter_draft(workspace, 2)
+    blocker = QualityFinding(code="STALE_REVIEW", severity=Severity.BLOCKER,
+                             location="chapter", message="引用章节已变化，审核过期")
+    monkeypatch.setattr("knowledge_product_workflow.runtime.validate_current_chapter_compliance", lambda *_: [blocker])
+    active = inspect_workflow(workspace)
+    assert active.target_chapter_number == 2
+    assert active.stage == "chapter_compliance_pending"
+    metadata, body = parse_markdown_artifact(later.read_text(encoding="utf-8"))
+    metadata.status = ArtifactStatus.IN_VALIDATION
+    later.write_text(render_markdown_artifact(metadata, body), encoding="utf-8")
+    pending = inspect_workflow(workspace)
+    assert pending.target_chapter_number == 1
+    assert pending.stage == "chapter_compliance_pending"  # Old blockers still prevent delivery.

@@ -7,6 +7,7 @@ import hmac
 import json
 import secrets
 import shutil
+import time
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -479,7 +480,15 @@ def _snapshot_batch(
         )
         (temporary / "batch.json").write_text(batch.model_dump_json(indent=2), encoding="utf-8")
         (temporary / "reviews").mkdir()
-        temporary.rename(final)
+        for attempt in range(3):
+            try:
+                temporary.rename(final)
+                break
+            except PermissionError as error:
+                if attempt == 2:
+                    raise PermissionError(f"审稿批次暂存目录提交在三次短重试后仍被拒绝：{temporary} -> {final}") from error
+                workspace.append_event("review_batch_commit_retry", {"attempt": attempt + 1, "reason": str(error)})
+                time.sleep(0.1 * (attempt + 1))
         return batch
     except Exception:
         if temporary.exists():

@@ -56,3 +56,27 @@ def test_source_card_requires_a_reader_visible_hyperlink_and_raw_tex_is_rejected
     assert {"PRESENTATION_SOURCE_CARD_INVALID", "PRESENTATION_RAW_TEX"} <= {
         finding.code for finding in findings
     }
+
+
+def test_only_explicit_common_population_distribution_is_summed(tmp_path: Path) -> None:
+    workspace = Workspace.create(tmp_path, "guide")
+    ordinary = "通过率 100%，容差 ±10%，降级率 <5%；三个指标的总体不同。"
+    assert validate_presentation_markdown(ordinary, "chapters/chapter-01.md", workspace) == []
+
+    def distribution(last: str) -> str:
+        return f"""::: {{.kp-percentage-distribution}}
+总体：本案例的开发时间分配
+
+| 项目 | 占比 |
+| --- | ---: |
+| 原型 | 40% |
+| 开发 | 40% |
+| 测试 | {last} |
+:::
+"""
+
+    assert validate_presentation_markdown(distribution("20%"), "chapters/chapter-01.md", workspace) == []
+    bad = validate_presentation_markdown(distribution("30%"), "chapters/chapter-01.md", workspace)
+    assert [item.code for item in bad] == ["PERCENTAGE_TOTAL_INVALID"]
+    range_value = validate_presentation_markdown(distribution("<20%"), "chapters/chapter-01.md", workspace)
+    assert [item.code for item in range_value] == ["PERCENTAGE_DISTRIBUTION_INVALID"]

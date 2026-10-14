@@ -9,10 +9,11 @@ _FENCE_START = re.compile(r"^\s*:::\s*\{(?P<attributes>[^}]*)\}\s*$")
 _DIV_CLASS = re.compile(r"\.([A-Za-z][A-Za-z0-9_-]*)")
 _LEGACY_MARKER = re.compile(r"^\s*\{\.(?P<component>kp-[A-Za-z][A-Za-z0-9_-]*)\}\s*$")
 _HEADING = re.compile(r"^#{1,6}\s+")
-_INTERNAL_MARKER = re.compile(r"\{\.kp-(?:source|key-takeaway|practice|note|decision|procedure|worksheet)\}")
+_INTERNAL_MARKER = re.compile(r"\{\.kp-(?:source|key-takeaway|practice|note|decision|procedure|worksheet|percentage-distribution|chapter-lead)\}")
 _FENCE = re.compile(r"^\s*:::")
 
 CALLOUT_LABELS = {
+    "kp-chapter-lead": "本章导读",
     "kp-note": "提示",
     "kp-key-takeaway": "本章要点",
     "kp-practice": "练习",
@@ -20,6 +21,7 @@ CALLOUT_LABELS = {
     "kp-decision": "决策要点",
     "kp-procedure": "操作步骤",
     "kp-worksheet": "工作表",
+    "kp-percentage-distribution": "百分比分配",
 }
 SUPPORTED_CALLOUTS = frozenset(CALLOUT_LABELS)
 

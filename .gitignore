@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
+dist/
+sdist/
 output/
 
 # Local credentials and certificates. Keep a redacted .env.example if one is needed.
@@ -22,6 +24,7 @@ output/
 /credentials/
 
 # Local generated workspaces and internal development records.
+/work/
 /book/
 /docs/superpowers/
 /IMPLEMENTATION_PLAN*.md
@@ -32,6 +35,8 @@ output/
 /MEMO*.md
 /WORKFLOW_TEST_CASE.md
 /AGENTS.md
+/HANDOFF.md
+/prompt.txt
 /kp-skills-improvement-handoff.md
 
 # Project-local D2 deployment and installation records.
@@ -39,6 +44,9 @@ output/
 
 # Local rendering previews and temporary build traces.
 /tmp/
+
+# User-provided reference documents, kept locally for design review.
+/PDF/
 
 # Agent session tool state (Reasonix working files, not project content).
 /.reasonix/

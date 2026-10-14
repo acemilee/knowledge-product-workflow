@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from typer.testing import CliRunner
 from knowledge_product_workflow.cli import app
 from knowledge_product_workflow.detail_constraints import DetailConstraints
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
+from knowledge_product_workflow.humanize import record_humanize_check
 from knowledge_product_workflow.models import ArtifactStatus
 from knowledge_product_workflow.runtime import (
     ChapterLeaseConflictError,
@@ -36,8 +38,24 @@ from knowledge_product_workflow.runtime import (
     start_run_intent,
 )
 from knowledge_product_workflow.state_machine import transition
+from knowledge_product_workflow.user_decisions import (
+    UserDecisionTarget,
+    UserResponseDecision,
+    record_user_decision,
+    request_user_decision,
+)
+from knowledge_product_workflow.workflows.authoring import (
+    approve_sample_chapter,
+    compile_chapter_contracts,
+    create_chapter_draft,
+)
 from knowledge_product_workflow.workflows.product_brief import create_product_brief
 from knowledge_product_workflow.workspace import Workspace
+from tests.blueprint_support import (
+    prepare_test_chapter_inputs,
+    submit_test_blueprint,
+    submit_test_chapter,
+)
 
 
 def _approve(path: Path) -> None:
@@ -78,6 +96,40 @@ def test_work_order_refuses_completion_after_an_input_snapshot_changes(tmp_path:
 
     with pytest.raises(WorkOrderInputChangedError, match="输入工件已变化"):
         complete_orchestration_work_order(workspace, order.work_order_id, "brief-preview-created")
+
+
+def test_changed_input_can_reroute_without_waiting_for_old_order_expiry(tmp_path: Path) -> None:
+    workspace = Workspace.create(tmp_path, "guide")
+    ensure_orchestration(workspace)
+    brief = create_product_brief(workspace, "AI Agent", DetailConstraints(target_words=1000))
+    old_path = create_orchestration_work_order(workspace)
+    old = read_orchestration_work_order(workspace, old_path)
+    brief.write_text(brief.read_text(encoding="utf-8") + "\n补充说明。\n", encoding="utf-8")
+
+    reroute = CliRunner().invoke(
+        app,
+        ["orchestration-plan", "--workspace", str(workspace.root), "--refresh", "--reason", "Brief 输入更新", "--json"],
+    )
+    assert reroute.exit_code == 0, reroute.output
+    new_path = workspace.root / json.loads(reroute.output)["work_order_path"]
+    assert new_path != old_path
+    retired = read_orchestration_work_order(workspace, old_path)
+    assert retired.lifecycle.value == "superseded"
+    assert retired.completion_proof is not None
+    assert retired.completion_proof.reason == "Brief 输入更新"
+    assert read_orchestration_work_order(workspace, new_path).schema_version == 3
+    assert old.expires_at > retired.completion_proof.completed_at
+
+
+def test_expired_order_is_retired_when_routing_a_retry(tmp_path: Path) -> None:
+    workspace = Workspace.create(tmp_path, "expired-guide")
+    initial = create_orchestration_work_order(workspace)
+    order = read_orchestration_work_order(workspace, initial)
+    expired = order.model_copy(update={"expires_at": order.created_at - timedelta(seconds=1)})
+    initial.write_text(expired.model_dump_json(), encoding="utf-8")
+    replacement = create_orchestration_work_order(workspace)
+    assert replacement != initial
+    assert read_orchestration_work_order(workspace, initial).lifecycle.value == "superseded"
 
 
 def test_chapter_lease_conflict_is_fail_closed(tmp_path: Path) -> None:
@@ -252,6 +304,73 @@ def test_cli_actions_close_the_current_handoff_and_create_one_successor(tmp_path
     reconciliation = reconcile_orchestration(workspace, allowed_current_action="submit-outline")
     assert reconciliation.blockers == []
     assert reconciliation.recoverable == []
+
+
+def test_chapter_writer_keeps_its_lease_until_submission_before_drafting_next_chapter(
+    tmp_path: Path,
+) -> None:
+    workspace = Workspace.create(tmp_path, "guide")
+    brief = create_product_brief(workspace, "决策教程", DetailConstraints(target_words=1000))
+    _approve(brief)
+    blueprint = submit_test_blueprint(workspace, brief, titles=("基础", "案例", "复盘"))
+    _approve(blueprint)
+    compile_chapter_contracts(workspace)
+    create_chapter_draft(workspace, 1)
+    submit_test_chapter(workspace, tmp_path, 1)
+    request_user_decision(workspace, UserDecisionTarget.SAMPLE)
+    record_user_decision(
+        workspace, UserDecisionTarget.SAMPLE, UserResponseDecision.APPROVE,
+        approved_by="用户", response="批准样章并继续",
+    )
+    approve_sample_chapter(workspace, "用户")
+
+    before = inspect_workflow(workspace)
+    assert before.stage == "chapter_drafts_incomplete"
+    assert before.target_chapter_number == 2
+    order_path = create_orchestration_work_order(workspace)
+    runner = CliRunner()
+    cross_chapter = runner.invoke(app, ["draft", "3", "--workspace", str(workspace.root)])
+    assert cross_chapter.exit_code == 1
+    assert "跨章节" in cross_chapter.output
+    drafted = runner.invoke(app, ["draft", "2", "--workspace", str(workspace.root)])
+    assert drafted.exit_code == 0, drafted.output
+
+    after_draft = inspect_workflow(workspace)
+    active = read_orchestration_work_order(workspace, order_path)
+    assert after_draft.stage == "chapter_compliance_pending"
+    assert after_draft.target_chapter_number == 2
+    assert active.lifecycle.value == "active"
+    assert active.lease is not None
+    assert not (workspace.root / "chapters" / "chapter-03.md").exists()
+    (workspace.root / "runs" / "chapter-03-candidate.md").write_text("并行准备材料。", encoding="utf-8")
+    (workspace.root / "research" / "source-ledger.jsonl").write_text(json.dumps({
+        "source_id": "other-chapter", "url": "https://example.com/other", "accessed_at": "2026-10-01",
+        "excerpt": "另一章的准备证据", "claim_ids": ["claim-other"], "license_note": "测试来源",
+    }) + "\n", encoding="utf-8")
+    assert create_orchestration_work_order(workspace) == order_path
+
+    source, compliance = prepare_test_chapter_inputs(workspace, tmp_path, 2)
+    record_humanize_check(workspace, 2, source)
+    submitted = runner.invoke(
+        app,
+        ["submit-chapter", "2", "--workspace", str(workspace.root),
+         "--from", str(source), "--compliance", str(compliance)],
+    )
+    assert submitted.exit_code == 0, submitted.output
+    completed = read_orchestration_work_order(workspace, order_path)
+    assert completed.lifecycle.value == "completed"
+    assert completed.completion_proof is not None
+    assert inspect_workflow(workspace).target_chapter_number == 3
+    assert not (workspace.root / "chapters" / "chapter-03.md").exists()
+    third_order_path = workspace.root / inspect_workflow(workspace).current_work_order
+    drafted = runner.invoke(app, ["draft", "3", "--workspace", str(workspace.root)])
+    assert drafted.exit_code == 0, drafted.output
+    assert read_orchestration_work_order(workspace, third_order_path).lifecycle.value == "active"
+    source, compliance = prepare_test_chapter_inputs(workspace, tmp_path, 3)
+    record_humanize_check(workspace, 3, source)
+    submitted = runner.invoke(app, ["submit-chapter", "3", "--workspace", str(workspace.root), "--from", str(source), "--compliance", str(compliance)])
+    assert submitted.exit_code == 0, submitted.output
+    assert read_orchestration_work_order(workspace, third_order_path).lifecycle.value == "completed"
 
 
 def test_failed_action_is_terminal_and_creates_a_distinct_retry_handoff(tmp_path: Path) -> None:

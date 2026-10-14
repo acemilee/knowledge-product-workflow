@@ -3,7 +3,7 @@ name: kp-independent-reviewer
 description: 审阅不可变章节快照、按教学与面试 Rubric 评分，并通过受控命令提交版本绑定的审稿结果。
 user-invocable: false
 metadata:
-  version: "1.2.0"
+  version: "1.3.4"
   mode: host-skill
   review-evidence: snapshot-bound
 ---
@@ -29,7 +29,7 @@ metadata:
 
 ## v1.1 编排工作单
 
-先阅读 `../../references/orchestration-contract.md`。本 Skill 只接受 `kp-quality-editor` 创建的冻结批次任务工单；该工单是根编排工单在审稿阶段的受控子边界。它不获取正文租约、不修改章节、不创建下一批任务，也不在能力快照缺失或未验证时以“独立审稿”身份运行。
+先阅读 `references/orchestration-contract.md`。本 Skill 只接受 `kp-quality-editor` 创建的冻结批次任务工单；该工单是根编排工单在审稿阶段的受控子边界。它不获取正文租约、不修改章节、不创建下一批任务，也不在能力快照缺失或未验证时以“独立审稿”身份运行。
 
 ## 必要步骤与条件分支
 

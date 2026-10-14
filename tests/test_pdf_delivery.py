@@ -29,21 +29,21 @@ def test_qmd_uses_the_approved_fixed_a4_layout(tmp_path: Path) -> None:
     qmd = qmd_path.read_text(encoding="utf-8")
     assert "papersize: a4" in qmd
     assert "fontsize: 12pt" in qmd
-    assert "geometry: left=16mm,right=16mm,top=18mm,bottom=18mm" in qmd
+    assert "geometry: left=13mm,right=13mm,top=18mm,bottom=18mm" in qmd
     assert "lang: zh-CN" in qmd
     assert "pdf-engine: xelatex" in qmd
     assert "toc-title: 目录" in qmd
     assert "title-block: false" in qmd
     assert "knowledge-book-cover.tex" in qmd
     assert "knowledge-book-style.tex" in qmd
-    assert "CJKmainfont: Microsoft YaHei" in qmd
+    assert "kp-font-role-policy: preferred" in qmd
     assert (workspace.root / "delivery" / "knowledge-book-cover.tex").is_file()
     style = (workspace.root / "delivery" / "knowledge-book-style.tex").read_text(encoding="utf-8")
-    assert "% knowledge-product-pdf-v4-style" in style
+    assert "% knowledge-product-pdf-v6-style" in style
     assert "\\usepackage{xeCJK}" in style
     assert "\\providecommand{\\KnowledgeProductLineSpread}{1.32}" in style
     assert "\\linespread{\\KnowledgeProductLineSpread}" in style
-    assert "fontsize=\\normalsize" in style
+    assert "fontsize=\\small" in style
     assert "\\renewcommand{\\headrulewidth}{0pt}" in style
     assert "\\AtBeginDocument" in style
     assert "\\@ifundefined{Shaded}" in style
@@ -212,3 +212,26 @@ def test_render_pdf_cli_refuses_to_skip_workflow_stages(tmp_path: Path, monkeypa
     assert result.exit_code == 1
     assert "当前工作流阶段不允许" in result.output
     assert "Traceback" not in result.output
+
+
+def test_body_page_budget_uses_actual_chapter_destination(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    from knowledge_product_workflow.publishing import pdf_body_page_numbers
+
+    workspace = Workspace.create(tmp_path, "body-range")
+    (workspace.root / "delivery" / "book.md").write_text("# 1. 正文起点\n", encoding="utf-8")
+    writer = PdfWriter()
+    for _ in range(6):
+        writer.add_blank_page(595.28, 841.89)
+    writer.add_outline_item("目录", 1)
+    writer.add_outline_item("1. 正文起点", 4)
+    pdf = workspace.root / "delivery" / "book.pdf"
+    writer.write(pdf)
+    assert pdf_body_page_numbers(workspace, pdf) == [5, 6]
+    writer = PdfWriter()
+    writer.add_blank_page(595.28, 841.89)
+    writer.add_outline_item("其他正文", 0)
+    writer.write(pdf)
+    with pytest.raises(ValueError, match="不能猜测正文页数"):
+        pdf_body_page_numbers(workspace, pdf)

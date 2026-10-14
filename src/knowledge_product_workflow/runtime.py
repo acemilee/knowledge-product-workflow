@@ -11,6 +11,8 @@ from enum import StrEnum
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from knowledge_product_workflow.assumption_ledger import (
     AssumptionDisposition,
@@ -18,7 +20,11 @@ from knowledge_product_workflow.assumption_ledger import (
     required_assumption_claim_ids,
 )
 from knowledge_product_workflow.chapter_compliance import validate_current_chapter_compliance
-from knowledge_product_workflow.claims import current_claim_contract_bindings
+from knowledge_product_workflow.claim_classification import factual_claim_ids
+from knowledge_product_workflow.claims import (
+    claim_scoped_evidence_digests,
+    current_claim_contract_bindings,
+)
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
 from knowledge_product_workflow.models import ArtifactStatus
 from knowledge_product_workflow.quality import (
@@ -84,6 +90,8 @@ class WorkflowStatus(BaseModel):
     orchestration_mode: str = "legacy"
     run_intent_state: str | None = None
     auto_to_delivery: bool = False
+    target_chapter_number: int | None = None
+    readonly_diagnostics: list[WorkflowAction] = Field(default_factory=list)
 
 
 class WorkflowAction(BaseModel):
@@ -127,6 +135,7 @@ class InputManifestEntry(BaseModel):
     path: str
     state: str
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    selector: str | None = None
 
 
 class OutputManifestEntry(BaseModel):
@@ -165,7 +174,7 @@ class ChapterLease(BaseModel):
 class OrchestrationWorkOrder(BaseModel):
     """Version-bound contract for one macro-routed Skill invocation."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     work_order_id: str
     created_at: datetime
     expires_at: datetime
@@ -180,6 +189,8 @@ class OrchestrationWorkOrder(BaseModel):
     allowed_write_paths: list[str]
     outputs: list[str]
     allowed_commands: list[str]
+    actions: list[WorkflowAction] = Field(default_factory=list)
+    command_discovery: list[str] = Field(default_factory=lambda: ["kp", "commands", "--all", "--json"])
     preconditions: list[str]
     success_transition: str
     failure_transition: str
@@ -208,6 +219,9 @@ class OrchestrationState(BaseModel):
     mode: str = "managed"
     initialized_at: datetime
     migrated_from_legacy: bool = False
+    reading_structure_revision: int = Field(default=1, ge=1, le=2)
+    reading_review_rubric_revision: int = Field(default=1, ge=1, le=3)
+    request_capture_revision: int = Field(default=0, ge=0, le=1)
 
 
 class RunIntentState(StrEnum):
@@ -387,6 +401,7 @@ def _status(
     declared_claim_ids: list[str],
     events: list[dict[str, object]],
     next_actions: list[WorkflowAction] | None = None,
+    target_chapter_number: int | None = None,
 ) -> WorkflowStatus:
     return WorkflowStatus(
         stage=stage,
@@ -397,6 +412,7 @@ def _status(
         declared_claim_ids=declared_claim_ids,
         recent_events=[str(event.get("event_type")) for event in events[-5:]],
         next_actions=next_actions or [],
+        target_chapter_number=target_chapter_number,
     )
 
 
@@ -428,6 +444,10 @@ _DELIVERY_STAGES = frozenset(
         "assembly_pending",
         "pdf_environment_unavailable",
         "pdf_render_pending",
+        "pdf_preview_repair_pending",
+        "pdf_visual_audit_pending",
+        "pdf_manual_review_pending",
+        "pdf_visual_repair_pending",
         "delivery_validation_pending",
         "delivery_quality_report_invalid",
         "delivery_quality_report_stale",
@@ -462,6 +482,11 @@ def _user_summary_for_stage(stage: str, blocked_by: list[str]) -> str:
         "quality_validation_pending": "正文已完成，正在进入全书质量闭环。",
         "assembly_pending": "质量门已通过，正在受控汇编读者交付物。",
         "pdf_render_pending": "Markdown 已汇编，正在生成 PDF 交付物。",
+        "pdf_preview_repair_pending": "PDF 已生成，正在修复页面预览。",
+        "pdf_visual_audit_pending": "PDF 已生成，下一步量测各页并检查清晰预览。",
+        "pdf_manual_review_pending": "页面量测已完成，请查看当前 PDF 并确认视觉复核结果。",
+        "pdf_visual_repair_pending": "当前页面仍有视觉缺陷，先按报告修订再复核。",
+        "chapter_assets_pending": "全部正文已就绪，图资产/完整提交仍有待办；可查看完整诊断预览，正式交付尚未通过。",
         "completed": "知识产品已完成并生成交付清单。",
         "independent_review_capability_pending": "本书要求独立审稿，必须先确认当前宿主能创建可验证的真实审稿子任务。",
         "research_impact_decision_pending": "研究已产生输入，需要先确认它是否影响课程范围或学习路径。",
@@ -474,8 +499,8 @@ def _human_decision_for_stage(stage: str) -> str | None:
         "brief_awaiting_approval": "请确认产品定位，或直接说明修改要求。",
         "blueprint_awaiting_approval": "请确认课程结构，或直接说明修改要求。",
         "sample_awaiting_approval": "请确认是否按该样章方向继续生成全书，或直接说明修改要求。",
+        "pdf_manual_review_pending": "请查看当前 PDF，确认视觉复核通过或指出需修改的页面。",
         "independent_review_capability_pending": "选择可验证独立审稿宿主，或将审稿策略改为 deterministic_only",
-        "research_impact_decision_pending": "确认研究影响的恢复路径",
     }.get(stage)
 
 
@@ -534,6 +559,11 @@ def _fallback_next_actions(workspace: Workspace, status: WorkflowStatus) -> list
             ["kp", "research", "<来源ID>", "<URL>", "--workspace", root],
             "RESEARCH_EVIDENCE_REQUIRED",
         ),
+        "research_impact_decision_pending": (
+            "record-research-impact",
+            ["kp", "record-research-impact", "--workspace", root, "--impact", "<影响分类>", "--summary", "<研究结论>"],
+            "RESEARCH_IMPACT_REQUIRED",
+        ),
         "assumptions_require_resolution": (
             "assumption",
             ["kp", "assumption", "<假设ID>", "--workspace", root],
@@ -549,6 +579,13 @@ def _fallback_next_actions(workspace: Workspace, status: WorkflowStatus) -> list
             ["kp", "render-pdf", "--workspace", root],
             "PDF_REQUIRED_AND_MISSING",
         ),
+        "pdf_preview_repair_pending": (
+            "repair-pdf-preview",
+            ["kp", "repair-pdf-preview", "--workspace", root],
+            "PDF_PREVIEW_REPAIR_REQUIRED",
+        ),
+        "pdf_visual_audit_pending": ("audit-pdf-visual", ["kp", "audit-pdf-visual", "--workspace", root], "PDF_VISUAL_AUDIT_REQUIRED"),
+        "pdf_manual_review_pending": ("record-pdf-visual-review", ["kp", "record-pdf-visual-review", "--workspace", root], "CURRENT_PDF_HUMAN_REVIEW_REQUIRED"),
         "delivery_validation_pending": (
             "validate-delivery",
             ["kp", "validate-delivery", "--workspace", root],
@@ -674,7 +711,7 @@ def ensure_orchestration(workspace: Workspace) -> OrchestrationState:
     return state
 
 
-def initialize_new_orchestration(workspace: Workspace) -> OrchestrationState:
+def initialize_new_orchestration(workspace: Workspace, *, current_policy: bool = False) -> OrchestrationState:
     """Create the managed controller records required by a freshly initialized book.
 
     This is intentionally distinct from :func:`ensure_orchestration`: the latter is
@@ -683,7 +720,9 @@ def initialize_new_orchestration(workspace: Workspace) -> OrchestrationState:
     """
     state = _read_orchestration_state(workspace)
     if state is None:
-        state = OrchestrationState(initialized_at=datetime.now(UTC), migrated_from_legacy=False)
+        state = OrchestrationState(initialized_at=datetime.now(UTC), migrated_from_legacy=False,
+                                   reading_structure_revision=2, reading_review_rubric_revision=3 if current_policy else 2,
+                                   request_capture_revision=1 if current_policy else 0)
         _atomic_json_write(_orchestration_state_path(workspace), state)
         workspace.append_event(
             "orchestration_initialized",
@@ -721,10 +760,44 @@ def _hash_bytes(path: Path) -> str | None:
 
 def _input_manifest(workspace: Workspace, status: WorkflowStatus) -> list[InputManifestEntry]:
     """Freeze actual artifact bytes, including missing declared inputs, but never logs."""
+    request_path = "runs/request-contract.yaml"
+    request_entry = InputManifestEntry(path=request_path,
+        state="present" if (workspace.root / request_path).is_file() else "missing",
+        sha256=_hash_bytes(workspace.root / request_path))
+    if status.stage in {
+        "sample_draft_missing", "sample_compliance_pending",
+        "chapter_drafts_incomplete", "chapter_compliance_pending",
+    }:
+        chapter_number = _target_chapter_from_status(status)
+        if chapter_number is not None:
+            _, chapter = require_current_chapter_contract(workspace, chapter_number)
+            paths = [
+                "planning/curriculum-blueprint.md",
+                f"chapters/chapter-{chapter_number:02d}-contract.md",
+            ]
+            entries = [
+                InputManifestEntry(
+                    path=path,
+                    state="present" if (workspace.root / path).is_file() else "missing",
+                    sha256=_hash_bytes(workspace.root / path),
+                )
+                for path in paths
+            ]
+            brief = workspace.root / "planning" / "product-brief.md"
+            entries.append(InputManifestEntry(
+                path="planning/product-brief.md", state="present", selector="content_contract",
+                sha256=brief_contract_fingerprints(_artifact_body(brief))["content_contract_sha256"],
+            ))
+            for relative, digest in claim_scoped_evidence_digests(workspace, set(chapter.claim_ids)).items():
+                entries.append(InputManifestEntry(
+                    path=relative, state="scoped", selector=f"chapter-{chapter_number:02d}-claims",
+                    sha256=digest,
+                ))
+            return [*entries, request_entry]
     return [
         InputManifestEntry(path=path, state=state, sha256=_hash_bytes(workspace.root / path))
-        for path, state in sorted(status.artifacts.items())
-    ]
+        for path, state in sorted(status.artifacts.items()) if path != request_path
+    ] + [request_entry]
 
 
 def _manifest_sha256(entries: list[InputManifestEntry]) -> str:
@@ -734,6 +807,8 @@ def _manifest_sha256(entries: list[InputManifestEntry]) -> str:
 
 
 def _target_chapter_from_status(status: WorkflowStatus) -> int | None:
+    if status.target_chapter_number is not None:
+        return status.target_chapter_number
     if status.stage.startswith("sample_"):
         return 1
     missing = sorted(
@@ -763,6 +838,30 @@ def _is_live(order: OrchestrationWorkOrder, now: datetime | None = None) -> bool
     return order.lifecycle in {WorkOrderLifecycle.PENDING, WorkOrderLifecycle.ACTIVE} and order.expires_at > (now or datetime.now(UTC))
 
 
+_CHAPTER_PRODUCTION_STAGES = frozenset(
+    {"sample_draft_missing", "sample_compliance_pending", "chapter_drafts_incomplete", "chapter_compliance_pending"}
+)
+
+
+def _live_chapter_order(
+    workspace: Workspace, status: WorkflowStatus, manifest_sha256: str
+) -> tuple[Path, OrchestrationWorkOrder] | None:
+    if status.stage not in _CHAPTER_PRODUCTION_STAGES:
+        return None
+    target = _target_chapter_from_status(status)
+    for path, order in reversed(_read_all_orchestration_work_orders(workspace)):
+        if (
+            _is_live(order)
+            and order.schema_version >= 3
+            and order.stage in _CHAPTER_PRODUCTION_STAGES
+            and order.skill == "kp-chapter-writer"
+            and order.target_chapter_number == target
+            and order.input_manifest_sha256 == manifest_sha256
+        ):
+            return path, order
+    return None
+
+
 def _current_orchestration_work_order_path(
     workspace: Workspace, status: WorkflowStatus
 ) -> Path | None:
@@ -770,8 +869,12 @@ def _current_orchestration_work_order_path(
         return None
     entries = _input_manifest(workspace, status)
     manifest_sha = _manifest_sha256(entries)
+    chapter_order = _live_chapter_order(workspace, status, manifest_sha)
+    if chapter_order is not None:
+        return chapter_order[0]
     target = _target_chapter_from_status(status)
     key_payload = {
+        "input_policy_version": 3,
         "macro_phase": _macro_phase_for_stage(status.stage).value,
         "stage": status.stage,
         "skill": status.recommended_skill,
@@ -782,7 +885,7 @@ def _current_orchestration_work_order_path(
         json.dumps(key_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     for path, order in reversed(_read_all_orchestration_work_orders(workspace)):
-        if order.idempotency_key == key and _is_live(order):
+        if order.idempotency_key == key and order.schema_version >= 3 and _is_live(order):
             return path
     return None
 
@@ -890,6 +993,7 @@ def _enrich_orchestration_status(workspace: Workspace, status: WorkflowStatus) -
         and adjusted.stage in production_before_sample
         and research_ledger.is_file()
         and research_ledger.read_text(encoding="utf-8").strip()
+        and set(adjusted.declared_claim_ids).intersection(_covered_claims(workspace)[0])
         and _latest_research_impact(workspace) is None
     ):
         adjusted = adjusted.model_copy(
@@ -910,6 +1014,16 @@ def _enrich_orchestration_status(workspace: Workspace, status: WorkflowStatus) -
         except (FileNotFoundError, ValueError):
             decision = None
     summary = _user_summary_for_stage(adjusted.stage, adjusted.blocked_by)
+    if decision is not None and decision.state == "revise" and adjusted.stage in {
+        "brief_awaiting_approval", "blueprint_awaiting_approval"
+    }:
+        command = "brief" if adjusted.stage == "brief_awaiting_approval" else "amend-outline"
+        actions = [WorkflowAction(
+            command=command,
+            argv=["kp", command, "--workspace", str(workspace.root), "--from", "<按反馈更新的完整输入>"],
+            reason_code="USER_REQUESTED_DRAFT_REVISION",
+        )]
+        summary = "已收到修改意见，请更新草案并重新展示确认。"
     if decision is not None and decision.state == "stale":
         summary = "内容已更新，请确认最新版本。"
     return adjusted.model_copy(
@@ -927,6 +1041,12 @@ def _enrich_orchestration_status(workspace: Workspace, status: WorkflowStatus) -
                 and intent.auto_to_delivery
             ),
             "next_actions": actions,
+            "target_chapter_number": _target_chapter_from_status(adjusted) if adjusted.stage in _CHAPTER_PRODUCTION_STAGES or adjusted.stage == "sample_awaiting_approval" else adjusted.target_chapter_number,
+            "readonly_diagnostics": [WorkflowAction(
+                command="check-chapter",
+                argv=["kp", "check-chapter", str(_target_chapter_from_status(adjusted)), "--workspace", str(workspace.root), "--from", "<当前候选源稿>", "--json"],
+                reason_code="CHAPTER_PROOF_REFRESH_DIAGNOSTIC",
+            )] if adjusted.stage in _CHAPTER_PRODUCTION_STAGES else [],
         }
     )
 
@@ -948,6 +1068,8 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
         "delivery/book.md": "present" if (root / "delivery" / "book.md").is_file() else "missing",
         "delivery/book.qmd": "present" if (root / "delivery" / "book.qmd").is_file() else "missing",
         "delivery/book.pdf": "present" if (root / "delivery" / "book.pdf").is_file() else "missing",
+        "runs/visual-audit-report.json": "present" if (root / "runs" / "visual-audit-report.json").is_file() else "missing",
+        "runs/pdf-visual-review.json": "present" if (root / "runs" / "pdf-visual-review.json").is_file() else "missing",
         "delivery/delivery-manifest.yaml": "present"
         if (root / "delivery" / "delivery-manifest.yaml").is_file()
         else "missing",
@@ -1015,19 +1137,8 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
             declared_claim_ids=[],
             events=events,
         )
-    if artifacts["planning/curriculum-blueprint.md"] != ArtifactStatus.APPROVED.value:
-        return _status(
-            stage="blueprint_awaiting_approval",
-            blocked_by=["课程蓝图尚未获得用户审批"],
-            recommended_skill="kp-curriculum-architect",
-            next_command=f'kp approve "{blueprint}" --workspace "{workspace_arg}"',
-            artifacts=artifacts,
-            declared_claim_ids=[],
-            events=events,
-        )
-
     try:
-        _, _, submission = require_current_submitted_blueprint(workspace)
+        _, _, submission = require_current_submitted_blueprint(workspace, require_approved=False)
     except CurriculumPrerequisiteError as error:
         return _status(
             stage="blueprint_invalid",
@@ -1047,6 +1158,16 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
                     reason_code="BLUEPRINT_CONTENT_BINDING_STALE",
                 )
             ],
+        )
+    if artifacts["planning/curriculum-blueprint.md"] != ArtifactStatus.APPROVED.value:
+        return _status(
+            stage="blueprint_awaiting_approval",
+            blocked_by=["课程蓝图尚未获得用户审批"],
+            recommended_skill="kp-curriculum-architect",
+            next_command=f'kp approve "{blueprint}" --workspace "{workspace_arg}"',
+            artifacts=artifacts,
+            declared_claim_ids=[],
+            events=events,
         )
     chapter_numbers = _expected_chapters_from_submission(submission)
     contracts = [root / "chapters" / f"chapter-{number:02d}-contract.md" for number in chapter_numbers]
@@ -1128,7 +1249,7 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
             events=events,
         )
     source_findings = validate_claims(
-        set(claim_bindings), root / "research" / "source-ledger.jsonl", claim_bindings
+        factual_claim_ids(workspace, claim_bindings), root / "research" / "source-ledger.jsonl", claim_bindings
     )
     source_findings.extend(
         validate_claims(required_assumption_claim_ids(assumption_path), root / "research" / "source-ledger.jsonl")
@@ -1160,7 +1281,11 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
             events=events,
         )
     if not sample_approved.is_file():
-        sample_findings = validate_current_chapter_compliance(workspace, sample)
+        from knowledge_product_workflow.content_checkpoint import current_content_checkpoint
+        sample_findings = [item for item in validate_current_chapter_compliance(workspace, sample)
+                           if item.severity.value == "blocker"]
+        if current_content_checkpoint(workspace, 1) is not None:
+            sample_findings = []
         if sample_findings:
             return _status(
                 stage="sample_compliance_pending",
@@ -1185,39 +1310,70 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
         )
 
     drafts = [root / "chapters" / f"chapter-{number:02d}.md" for number in chapter_numbers]
-    missing_drafts = [path for path in drafts if not path.is_file()]
     artifacts.update({_relative(workspace, path): _artifact_state(path) for path in drafts})
-    if missing_drafts:
-        missing_numbers = ", ".join(str(int(path.stem.split("-")[1])) for path in missing_drafts)
-        return _status(
-            stage="chapter_drafts_incomplete",
-            blocked_by=[f"缺少章节正文：第 {missing_numbers} 章"],
-            recommended_skill="kp-chapter-writer",
-            next_command=f'kp draft <章节号> --workspace "{workspace_arg}"',
-            artifacts=artifacts,
-            declared_claim_ids=declared_claim_ids,
-            events=events,
-        )
+    deferred_chapters = []
+    deferred_semantic_reviews = []
+    # Finish the reopened draft before repairing proofs of chapters referring
+    # to it. Those stale proofs still block the subsequent quality/delivery gate.
+    chapter_drafts = sorted(zip(chapter_numbers, drafts, strict=True),
+                            key=lambda item: artifacts[_relative(workspace, item[1])] != "in_production")
+    for chapter_number, draft in chapter_drafts:
+        if not draft.is_file():
+            return _status(
+                stage="chapter_drafts_incomplete",
+                blocked_by=[f"缺少第 {chapter_number} 章正文骨架"],
+                recommended_skill="kp-chapter-writer",
+                next_command=f'kp draft {chapter_number} --workspace "{workspace_arg}"',
+                artifacts=artifacts,
+                declared_claim_ids=declared_claim_ids,
+                events=events,
+                target_chapter_number=chapter_number,
+            )
+        compliance_findings = [item for item in validate_current_chapter_compliance(workspace, draft)
+                               if item.severity.value == "blocker"]
+        if compliance_findings:
+            from knowledge_product_workflow.content_checkpoint import current_content_checkpoint
+            checkpoint = current_content_checkpoint(workspace, chapter_number)
+            if checkpoint is not None:
+                deferred_chapters.append(chapter_number)
+                continue
+            only_external_review_stale = all(
+                item.code == "DEVELOPMENTAL_REPORT_REQUIRED"
+                and ("review_context_current" in item.message or "实际比较的案例单元已变化" in item.message)
+                for item in compliance_findings)
+            if only_external_review_stale and artifacts[_relative(workspace, draft)] != "in_production":
+                # Body/contract/plan compliance has already passed above. Queue
+                # only the external-context review; final assurance still blocks.
+                deferred_semantic_reviews.append((chapter_number, compliance_findings[0].message))
+                continue
+            return _status(
+                stage="chapter_compliance_pending",
+                blocked_by=[compliance_findings[0].message],
+                recommended_skill="kp-chapter-writer",
+                next_command=(
+                    f'kp submit-chapter {chapter_number} --workspace "{workspace_arg}" '
+                    "--from <chapter.md> --compliance <chapter-compliance.json>"
+                ),
+                artifacts=artifacts,
+                declared_claim_ids=declared_claim_ids,
+                events=events,
+                target_chapter_number=chapter_number,
+            )
 
-    compliance_findings = [
-        finding
-        for draft in drafts
-        for finding in validate_current_chapter_compliance(workspace, draft)
-    ]
-    if compliance_findings:
-        return _status(
-            stage="chapter_compliance_pending",
-            blocked_by=[compliance_findings[0].message],
-            recommended_skill="kp-chapter-writer",
-            next_command=(
-                f'kp submit-chapter <章节号> --workspace "{workspace_arg}" --from <chapter.md> '
-                "--compliance <chapter-compliance.json>"
-            ),
-            artifacts=artifacts,
-            declared_claim_ids=declared_claim_ids,
-            events=events,
-        )
-
+    if deferred_semantic_reviews:
+        number, reason = deferred_semantic_reviews[0]
+        return _status(stage="chapter_compliance_pending", blocked_by=[reason],
+                       recommended_skill="kp-chapter-writer",
+                       next_command=f'kp submit-chapter {number} --workspace "{workspace_arg}" --from <chapter.md> --compliance <chapter-compliance.json>',
+                       artifacts=artifacts, declared_claim_ids=declared_claim_ids, events=events,
+                       target_chapter_number=number)
+    if deferred_chapters:
+        number = deferred_chapters[0]
+        return _status(stage="chapter_assets_pending", blocked_by=[f"正文已就绪；第{number}章仍有待办资产/完整提交，正式交付阻断"],
+                       recommended_skill="kp-chapter-writer",
+                       next_command=f'kp render-review-preview --workspace "{workspace_arg}"',
+                       artifacts=artifacts, declared_claim_ids=declared_claim_ids, events=events,
+                       target_chapter_number=number)
     report_path = root / "delivery" / "qa-report.json"
     if not report_path.is_file() or not _has_event(events, "validation_completed"):
         return _status(
@@ -1279,7 +1435,10 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
             events=events,
         )
     if artifacts["delivery/book.md"] != "missing" and artifacts["delivery/book.qmd"] != "missing":
-        from knowledge_product_workflow.publishing import release_readiness_findings
+        from knowledge_product_workflow.publishing import (
+            pdf_template_input_drift,
+            release_readiness_findings,
+        )
 
         reassembly_findings = [
             finding
@@ -1293,12 +1452,14 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
                 "RELEASE_INPUT_HASH_MISMATCH",
             }
         ]
-        if reassembly_findings:
+        template_drift = pdf_template_input_drift(workspace) if requires_pdf else []
+        if reassembly_findings or template_drift:
             return _status(
                 stage="assembly_pending",
                 blocked_by=[
                     "交付派生输入已过期："
-                    + reassembly_findings[0].message
+                    + (reassembly_findings[0].message if reassembly_findings else
+                       "当前运行包的排版模板已更新：" + "、".join(template_drift))
                     + "；CLI 将在重新汇编时受控重建清单。"
                 ],
                 recommended_skill="kp-publisher",
@@ -1352,6 +1513,98 @@ def _inspect_workflow(workspace: Workspace) -> WorkflowStatus:
                 )
             ],
         )
+    if requires_pdf:
+        from knowledge_product_workflow.pdf_visual import (
+            manual_visual_review_needed,
+            preview_repair_needed,
+            uses_v6_profile,
+        )
+        from knowledge_product_workflow.visual_audit import current_visual_audit
+
+        try:
+            if len(PdfReader(root / "delivery" / "book.pdf").pages) == 0:
+                raise ValueError("PDF 没有页面")
+        except (OSError, PdfReadError, ValueError):
+            return _status(
+                stage="pdf_render_pending",
+                blocked_by=["当前 PDF 损坏或无法读取，需要重新受控渲染"],
+                recommended_skill="kp-publisher",
+                next_command=f'kp render-pdf --workspace "{workspace_arg}"',
+                artifacts=artifacts,
+                declared_claim_ids=declared_claim_ids,
+                events=events,
+                next_actions=[
+                    WorkflowAction(
+                        command="render-pdf",
+                        argv=["kp", "render-pdf", "--workspace", workspace_arg],
+                        reason_code="PDF_INVALID_AND_REBUILD_REQUIRED",
+                    )
+                ],
+            )
+        if preview_repair_needed(workspace):
+            return _status(
+                stage="pdf_preview_repair_pending",
+                blocked_by=["当前 PDF 的页面预览清单或图片缺失、损坏或过期"],
+                recommended_skill="kp-publisher",
+                next_command=f'kp repair-pdf-preview --workspace "{workspace_arg}"',
+                artifacts=artifacts,
+                declared_claim_ids=declared_claim_ids,
+                events=events,
+                next_actions=[
+                    WorkflowAction(
+                        command="repair-pdf-preview",
+                        argv=["kp", "repair-pdf-preview", "--workspace", workspace_arg],
+                        reason_code="PDF_PREVIEW_REPAIR_REQUIRED",
+                    )
+                ],
+            )
+        if uses_v6_profile(workspace) and current_visual_audit(workspace) is None:
+            return _status(
+                stage="pdf_visual_audit_pending", blocked_by=["当前 PDF 缺少有效逐页视觉报告"],
+                recommended_skill="kp-visual-reviewer", next_command=f'kp audit-pdf-visual --workspace "{workspace_arg}"',
+                artifacts=artifacts, declared_claim_ids=declared_claim_ids, events=events,
+            )
+        audit = current_visual_audit(workspace) if uses_v6_profile(workspace) else None
+        if audit is not None and (
+            any(finding.severity.value == "blocker" for finding in audit.findings)
+            or any(observation.assessment == "failed" for observation in audit.observations)
+        ):
+            failed = next((item for item in audit.observations if item.assessment == "failed"), None)
+            content_failure = (failed is not None and failed.responsible_skill == "kp-chapter-writer") or any(
+                finding.code == "ILLUSTRATION_CONTENT_FAILED" for finding in audit.findings)
+            missing_style = any(finding.code == "ILLUSTRATION_STYLE_PROOF_REQUIRED" for finding in audit.findings)
+            action = "record-illustration-style-check" if missing_style else "amend-chapter" if content_failure else "update-publication"
+            argv = ["kp", action, "--workspace", workspace_arg, "--from", "<出版修订输入>"] if action == "update-publication" else ["kp", action, "<受影响章节号>", "--workspace", workspace_arg, "--reason", "<视觉报告修订原因>"]
+            if missing_style:
+                argv = ["kp", action, "--workspace", workspace_arg, "--from", "<当前资产风格观察>"]
+            if missing_style:
+                from knowledge_product_workflow.illustration_updates import (
+                    presentation_update_needed,
+                )
+                from knowledge_product_workflow.illustrations import current_profile
+                if current_profile(workspace).illustration_style_revision == 2 and presentation_update_needed(workspace):
+                    action = "update-diagram-presentation"
+                    argv = ["kp",action,"<受影响章节号>","<图ID>","--workspace",workspace_arg,"--chapter-source","<当前已提交章节>"]
+                    missing_style = False
+            style_failure = any(finding.code == "ILLUSTRATION_STYLE_FAILED" for finding in audit.findings)
+            if style_failure:
+                action = "illustration-preflight"
+                argv = ["kp", action, "<受影响章节号>", "--workspace", workspace_arg,
+                        "--from", "<已冻结语义输入>", "--chapter-source", "<已提交章节>", "--supports-reference",
+                        "--repair-reason", "<当前报告的明确样式缺陷>", "--reference-capacity", "3"]
+            return _status(
+                stage="pdf_visual_repair_pending", blocked_by=["视觉报告仍有 blocker 或失败观察；不能记录人工通过或反复校验"],
+                recommended_skill="kp-diagram-designer" if style_failure or action == "update-diagram-presentation" else "kp-visual-reviewer" if missing_style else "kp-publisher" if action == "update-publication" else "kp-quality-editor",
+                next_command="缺证明先记录当前资产检查；样式错误在原槽位预算内重新生图/提交，保持正文；内容错误amend-chapter。修复后受控重渲染，不重复validate。",
+                artifacts=artifacts, declared_claim_ids=declared_claim_ids, events=events,
+                next_actions=[WorkflowAction(command=action, argv=argv, reason_code="PDF_VISUAL_REPAIR_REQUIRED")],
+            )
+        if manual_visual_review_needed(workspace):
+            return _status(
+                stage="pdf_manual_review_pending", blocked_by=["当前 PDF 尚未获得版本绑定的人工视觉复核"],
+                recommended_skill="kp-create", next_command="展示当前 PDF 和视觉报告，用户确认后记录复核。",
+                artifacts=artifacts, declared_claim_ids=declared_claim_ids, events=events,
+            )
     if not _has_event(events, "delivery_validation_completed"):
         return _status(
             stage="delivery_validation_pending",
@@ -1456,6 +1709,9 @@ _COMMAND_STAGES: dict[str, frozenset[str]] = {
     ),
     "assemble": frozenset({"assembly_pending"}),
     "render-pdf": frozenset({"pdf_render_pending"}),
+    "repair-pdf-preview": frozenset({"pdf_preview_repair_pending"}),
+    "audit-pdf-visual": frozenset({"pdf_visual_audit_pending"}),
+    "record-pdf-visual-review": frozenset({"pdf_manual_review_pending"}),
     "validate-delivery": frozenset(
         {
             "delivery_validation_pending",
@@ -1540,7 +1796,7 @@ _SKILL_SCOPES: dict[str, tuple[list[str], list[str], list[str]]] = {
     ),
     "kp-diagram-designer": (
         ["planning/", "chapters/", "assets/"],
-        ["assets/figures/", "runs/diagrams/"],
+        ["assets/figures/", "runs/diagrams/", "runs/illustrations/", "planning/illustration-plan.json"],
         [
             "assets/figures/<diagram-id>.pdf",
             "assets/figures/<diagram-id>.png",
@@ -1562,14 +1818,24 @@ _SKILL_SCOPES: dict[str, tuple[list[str], list[str], list[str]]] = {
         ["delivery/"],
         ["delivery/book.md", "delivery/book.qmd", "delivery/book.pdf", "delivery/delivery-manifest.yaml"],
     ),
+    "kp-visual-reviewer": (
+        ["planning/publication-profile.yaml", "delivery/", "runs/pdf-preview/", "runs/diagrams/", "assets/figures/", "runs/illustrations/"],
+        ["runs/visual-audit-report.json", "runs/visual-audit-pages/", "runs/illustrations/asset-checks/", "runs/illustrations/candidates/"],
+        ["runs/visual-audit-report.json"],
+    ),
     "kp-create": (["planning/", "chapters/", "delivery/", "runs/"], [], []),
 }
 
 
 _STAGE_ACTION_ALIASES: dict[str, set[str]] = {
+    "sample_compliance_pending": {"submit-chapter", "checkpoint-chapter-content"},
+    "chapter_compliance_pending": {"submit-chapter", "checkpoint-chapter-content"},
+    "chapter_assets_pending": {"submit-chapter", "update-diagram-presentation", "activate-illustration-candidate"},
     # The template-generation command is preparatory. Submitting the completed
     # topic-specific blueprint is what actually closes this architecture handoff.
     "blueprint_missing": {"submit-outline"},
+    "sample_draft_missing": {"submit-chapter", "checkpoint-chapter-content", "update-diagram-presentation", "activate-illustration-candidate"},
+    "chapter_drafts_incomplete": {"submit-chapter", "checkpoint-chapter-content", "update-diagram-presentation", "activate-illustration-candidate"},
 }
 
 
@@ -1577,6 +1843,7 @@ def _orchestration_idempotency_key(
     status: WorkflowStatus, manifest_sha256: str, target_chapter_number: int | None
 ) -> str:
     payload = {
+        "input_policy_version": 3,
         "macro_phase": status.macro_phase.value,
         "stage": status.stage,
         "skill": status.recommended_skill,
@@ -1601,7 +1868,8 @@ def _next_work_order_id(workspace: Workspace, idempotency_key: str) -> str:
 
 
 def create_orchestration_work_order(
-    workspace: Workspace, *, ttl: timedelta = timedelta(minutes=30), adopt_legacy: bool = False
+    workspace: Workspace, *, ttl: timedelta = timedelta(minutes=30), adopt_legacy: bool = False,
+    refresh_reason: str | None = None,
 ) -> Path:
     """Create or reuse the exact v1.1 handoff required by the current status.
 
@@ -1616,13 +1884,34 @@ def create_orchestration_work_order(
         )
     ensure_orchestration(workspace)
     status = inspect_workflow(workspace)
+    intent = read_run_intent(workspace)
+    if intent is not None and intent.auto_to_delivery and intent.state is RunIntentState.WAITING_FOR_DECISION and status.required_human_decision is None and status.stage != "completed":
+        _atomic_json_write(_run_intent_path(workspace), intent.model_copy(update={"state": RunIntentState.ACTIVE, "updated_at": datetime.now(UTC), "stop_reason": None}))
+        workspace.append_event("run_intent_resumed", {"intent_id": intent.intent_id, "reason": "当前失效决定已转为受控内部恢复，无需新的产品审批"})
     entries = _input_manifest(workspace, status)
     manifest_sha256 = _manifest_sha256(entries)
+    chapter_order = _live_chapter_order(workspace, status, manifest_sha256)
+    if chapter_order is not None:
+        supersede_orchestration_work_orders(
+            workspace,
+            refresh_reason or "存在与当前章节工单冲突的旧路由",
+            keep_ids=frozenset({chapter_order[1].work_order_id}),
+        )
+        return chapter_order[0]
     target_chapter_number = _target_chapter_from_status(status)
     idempotency_key = _orchestration_idempotency_key(status, manifest_sha256, target_chapter_number)
     for path, existing in reversed(_read_all_orchestration_work_orders(workspace)):
-        if existing.idempotency_key == idempotency_key and _is_live(existing):
+        if existing.idempotency_key == idempotency_key and existing.schema_version >= 3 and _is_live(existing):
+            supersede_orchestration_work_orders(
+                workspace,
+                refresh_reason or "存在与当前唯一工单冲突的旧路由",
+                keep_ids=frozenset({existing.work_order_id}),
+            )
             return path
+
+    # A newly routed stage must not leave an older, equally authorized handoff
+    # alive for thirty minutes. The exact current order was reused above.
+    supersede_orchestration_work_orders(workspace, refresh_reason or "当前工作流阶段或输入版本已变化")
 
     reads, writes, outputs = _SKILL_SCOPES[status.recommended_skill]
     actions = status.next_actions or _fallback_next_actions(workspace, status)
@@ -1643,6 +1932,7 @@ def create_orchestration_work_order(
         allowed_commands=sorted(
             {action.command for action in actions} | _STAGE_ACTION_ALIASES.get(status.stage, set())
         ),
+        actions=actions,
         preconditions=[f"stage={status.stage}", *status.blocked_by],
         success_transition="重新读取 kp status --json 并由控制面选择下一动作",
         failure_transition="保留当前工件并按 kp status --json 的恢复路径处理",
@@ -1658,7 +1948,12 @@ def create_orchestration_work_order(
         )
         order = order.model_copy(update={"lifecycle": WorkOrderLifecycle.ACTIVE, "lease": lease})
     output = _orchestration_work_order_root(workspace) / f"{order.work_order_id}.json"
-    _atomic_json_write(output, order)
+    try:
+        _atomic_json_write(output, order)
+    except OSError:
+        if order.lease is not None:
+            release_chapter_lease(workspace, order.lease.lease_id, order.work_order_id)
+        raise
     workspace.append_event(
         "orchestration_work_order_created",
         {
@@ -1727,7 +2022,7 @@ def _live_order_for_action(workspace: Workspace, action: str) -> OrchestrationWo
     return None
 
 
-def capture_orchestration_action(workspace: Workspace, action: str) -> str | None:
+def capture_orchestration_action(workspace: Workspace, action: str, *, chapter_number: int | None = None) -> str | None:
     """Freeze the one live handoff before a command writes stage-changing output.
 
     Commands commonly change the workflow stage as part of producing their output.
@@ -1743,6 +2038,13 @@ def capture_orchestration_action(workspace: Workspace, action: str) -> str | Non
         if _is_live(order) and action in order.allowed_commands
     ]
     if not matches:
+        # New managed books must not adopt a changed stage simply because the
+        # old handoff lacks the newly requested command. Explicit legacy library
+        # fixtures retain their prior first-action recovery behavior.
+        state = _read_orchestration_state(workspace)
+        live = [order for _, order in _read_all_orchestration_work_orders(workspace) if _is_live(order)]
+        if state is not None and state.request_capture_revision >= 1 and live:
+            validate_orchestration_work_order(workspace, live[-1].work_order_id)
         # A controlled command can legitimately be the first v1.1 action after
         # an in-process compatibility fixture or a recovered legacy mutation.
         # Route the *current* persisted stage once, then freeze the resulting
@@ -1756,9 +2058,20 @@ def capture_orchestration_action(workspace: Workspace, action: str) -> str | Non
     if not matches:
         raise OrchestrationWorkOrderError(f"当前托管工作区没有允许执行 kp {action} 的有效工单")
     if len(matches) > 1:
-        raise OrchestrationWorkOrderError(f"当前托管工作区存在多个允许执行 kp {action} 的有效工单")
+        create_orchestration_work_order(workspace)
+        matches = [
+            order
+            for _, order in _read_all_orchestration_work_orders(workspace)
+            if _is_live(order) and action in order.allowed_commands
+        ]
+    if len(matches) > 1:
+        ids = ", ".join(order.work_order_id for order in matches)
+        raise OrchestrationWorkOrderError(
+            f"当前存在多个允许 kp {action} 的工单：{ids}；请用 kp orchestration-plan --refresh --reason <原因> "
+            "受控重路由，无法自动证明失效时用 kp cancel-orchestration-work-order 指定冲突工单。"
+        )
     order = matches[0]
-    validate_orchestration_work_order(workspace, order.work_order_id, command=action)
+    validate_orchestration_work_order(workspace, order.work_order_id, command=action, chapter_number=chapter_number)
     return order.work_order_id
 
 
@@ -1776,12 +2089,54 @@ def validate_orchestration_work_order(
     status = inspect_workflow(workspace)
     current_manifest = _manifest_sha256(_input_manifest(workspace, status))
     if current_manifest != order.input_manifest_sha256:
-        raise WorkOrderInputChangedError("工单输入工件已变化；请重新路由并创建新的编排工单")
+        before = {entry.path: entry for entry in order.inputs}
+        after = {entry.path: entry for entry in _input_manifest(workspace, status)}
+        changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+        raise WorkOrderInputChangedError(
+            "工单输入工件已变化：" + (", ".join(changed[:8]) or "输入策略或工作流阶段")
+            + "；请运行 kp orchestration-plan --refresh --reason <原因>。"
+        )
     if command is not None and command not in order.allowed_commands:
         raise OrchestrationWorkOrderError(f"工单不允许执行 kp {command}")
     if chapter_number is not None and order.target_chapter_number not in {None, chapter_number}:
         raise OrchestrationWorkOrderError("工单不拥有该章节；不得跨章节写入")
     return order
+
+
+def capture_orchestration_update(workspace: Workspace) -> tuple[WorkflowStatus, list[InputManifestEntry]] | None:
+    """Snapshot before a supplementary controlled write; new books refuse preexisting drift."""
+    state = _read_orchestration_state(workspace)
+    if state is None:
+        return None
+    status = inspect_workflow(workspace)
+    live = [order for _, order in _read_all_orchestration_work_orders(workspace) if _is_live(order)]
+    if state.request_capture_revision >= 1 and live:
+        validate_orchestration_work_order(workspace, live[-1].work_order_id)
+    return status, _input_manifest(workspace, status)
+
+
+def refresh_orchestration_after_controlled_update(
+    workspace: Workspace, action: str, *,
+    snapshot: tuple[WorkflowStatus, list[InputManifestEntry]] | None,
+    output_paths: list[Path | str] | tuple[Path | str, ...],
+) -> Path | None:
+    """Refresh a successor only after observed writes changed their declared inputs."""
+    if snapshot is None:
+        return None
+    status, previous = snapshot
+    before = {entry.path: entry for entry in previous}
+    # Compare the same dependency scope, even if producing a legitimate result
+    # now routes to a different chapter or stage.
+    after = {entry.path: entry for entry in _input_manifest(workspace, status)}
+    changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
+    outputs = _output_manifest(workspace, output_paths)
+    if not changed.issubset({entry.path for entry in outputs}):
+        raise WorkOrderInputChangedError("受控更新期间出现非输出输入变化；请运行 kp orchestration-plan --refresh --reason <原因>。")
+    workspace.append_event("orchestration_controlled_update", {
+        "action": action, "changed_inputs": sorted(changed),
+        "outputs": [entry.model_dump(mode="json") for entry in outputs],
+    })
+    return create_orchestration_work_order(workspace, refresh_reason=f"kp {action} 已成功更新当前工件")
 
 
 def complete_orchestration_work_order(
@@ -1804,12 +2159,23 @@ def complete_orchestration_work_order(
     status = inspect_workflow(workspace)
     current_manifest = _manifest_sha256(_input_manifest(workspace, status))
     outputs = _output_manifest(workspace, output_paths)
-    if (
-        current_manifest != order.input_manifest_sha256
-        and status.stage == order.stage
-        and not (allow_same_stage_output and outputs)
-    ):
-        raise WorkOrderInputChangedError("工单输入工件已变化；请重新路由并创建新的编排工单")
+    if current_manifest != order.input_manifest_sha256 and status.stage == order.stage:
+        before = {entry.path: entry for entry in order.inputs}
+        after = {entry.path: entry for entry in _input_manifest(workspace, status)}
+        changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
+        observed_outputs = {entry.path for entry in outputs}
+        scoped_submission = False
+        if (action == "submit-chapter" and order.target_chapter_number is not None
+                and _target_chapter_from_status(status) != order.target_chapter_number
+                and status.stage in _CHAPTER_PRODUCTION_STAGES):
+            number = order.target_chapter_number
+            previous_scope = status.model_copy(update={"target_chapter_number": number, "stage": order.stage})
+            scoped_submission = (
+                _manifest_sha256(_input_manifest(workspace, previous_scope)) == order.input_manifest_sha256
+                and {f"chapters/chapter-{number:02d}.md", f"runs/chapter-compliance/chapter-{number:02d}.json"}.issubset(observed_outputs)
+            )
+        if not (allow_same_stage_output and outputs and (changed.issubset(observed_outputs) or scoped_submission)):
+            raise WorkOrderInputChangedError("工单输入工件已变化且不属于本动作实际输出；请运行 kp orchestration-plan --refresh --reason <原因>。")
     event_id = f"event-{uuid.uuid4().hex}"
     completed = order.model_copy(
         update={
@@ -1817,7 +2183,7 @@ def complete_orchestration_work_order(
             "completion_proof": CompletionProof(
                 completed_at=datetime.now(UTC),
                 completed_by="kp-control-plane",
-                transition=action,
+                transition="chapter_content_checkpointed" if action == "checkpoint-chapter-content" else action,
                 event_id=event_id,
                 proof=proof.strip(),
                 input_manifest_sha256=order.input_manifest_sha256,
@@ -1907,7 +2273,7 @@ def _resume_run_intent_after_approved_decision(workspace: Workspace, action: str
     accepted the displayed version, so resumption happens here rather than when
     the host merely records an ambiguous natural-language response.
     """
-    if action not in {"approve", "approve-sample"}:
+    if action not in {"approve", "approve-sample", "record-pdf-visual-review"}:
         return None
     intent = read_run_intent(workspace)
     if (
@@ -1951,14 +2317,16 @@ def _terminalize_run_intent(workspace: Workspace, *, delivery_complete: bool) ->
     return terminal
 
 
-def supersede_orchestration_work_orders(workspace: Workspace, reason: str) -> list[Path]:
+def supersede_orchestration_work_orders(
+    workspace: Workspace, reason: str, *, keep_ids: frozenset[str] = frozenset()
+) -> list[Path]:
     """Close live handoffs invalidated by a controlled revision without deleting history."""
     if _read_orchestration_state(workspace) is None:
         return []
     now = datetime.now(UTC)
     changed: list[Path] = []
     for path, order in _read_all_orchestration_work_orders(workspace):
-        if not _is_live(order):
+        if order.lifecycle not in {WorkOrderLifecycle.PENDING, WorkOrderLifecycle.ACTIVE} or order.work_order_id in keep_ids:
             continue
         superseded = order.model_copy(
             update={
@@ -1974,7 +2342,9 @@ def supersede_orchestration_work_orders(workspace: Workspace, reason: str) -> li
         )
         _atomic_json_write(path, superseded)
         if order.lease is not None:
-            release_chapter_lease(workspace, order.lease.lease_id, order.work_order_id)
+            current_lease = _read_lease(_lease_path(workspace, order.lease.chapter_number))
+            if current_lease is not None and current_lease.lease_id == order.lease.lease_id and current_lease.owner_work_order_id == order.work_order_id:
+                release_chapter_lease(workspace, order.lease.lease_id, order.work_order_id)
         changed.append(path)
     if changed:
         workspace.append_event(
@@ -2090,7 +2460,7 @@ def _advance_run_intent_after_completion(
     elif current.required_human_decision is not None:
         updates.update(
             state=RunIntentState.WAITING_FOR_DECISION,
-            stop_reason="等待用户的产品级决定",
+            stop_reason="等待用户对当前 PDF 的视觉判断" if current.stage == "pdf_manual_review_pending" else "等待用户的产品级决定",
         )
     elif current.stage == "completed":
         updates.update(state=RunIntentState.COMPLETED, stop_reason="交付已完成")
