@@ -93,6 +93,7 @@ def quality_report_inputs(workspace: Workspace, validation_stage: str) -> list[Q
         root / "planning" / "curriculum-blueprint.md",
         root / "research" / "source-ledger.jsonl",
         root / "research" / "assumption-ledger.jsonl",
+        root / "research" / "claim-classifications.jsonl",
         root / "chapters" / "chapter-01-sample.approved",
     ]
     candidates.extend(sorted((root / "chapters").glob("chapter-[0-9][0-9].md")))
@@ -101,9 +102,10 @@ def quality_report_inputs(workspace: Workspace, validation_stage: str) -> list[Q
     candidates.extend(sorted((root / "runs" / "humanize").glob("chapter-[0-9][0-9].json")))
     candidates.extend(sorted((root / "runs" / "editorial").glob("chapter-[0-9][0-9]-developmental-report.json")))
     candidates.extend(sorted((root / "chapters").glob("chapter-[0-9][0-9]-content-plan.yaml")))
-    token_budget = root / "runs" / "token-budget.json"
-    if token_budget.is_file():
-        candidates.append(token_budget)
+    candidates.extend(sorted((root / "runs" / "illustrations" / "asset-checks").glob("*.json")))
+    image_budget = root / "runs" / "illustrations" / "budget.json"
+    if image_budget.is_file() and validation_stage == "delivery":
+        candidates.append(image_budget)
     candidates.extend(sorted((root / "runs" / "review-batches").glob("**/*.json")))
     from knowledge_product_workflow.quality_exceptions import controlled_exception_input_paths
 
@@ -123,10 +125,22 @@ def quality_report_inputs(workspace: Workspace, validation_stage: str) -> list[Q
                 root / "delivery" / "knowledge-book-components.tex",
                 root / "delivery" / "knowledge-book-components.lua",
                 root / "runs" / "pdf-preview" / "preview-manifest.json",
+                root / "runs" / "visual-audit-report.json",
+                root / "runs" / "pdf-visual-review.json",
             )
         )
-        candidates.extend(sorted((root / "runs" / "pdf-preview").glob("*.png")))
+        from knowledge_product_workflow.pdf_preview import current_pdf_preview
+
+        preview_root = root / "runs" / "pdf-preview"
+        current_preview = current_pdf_preview(root / "delivery" / "book.pdf", preview_root)
+        if current_preview is not None:
+            candidates.extend(
+                preview_root / page.image_path
+                for page in current_preview[1].pages
+                if page.image_path is not None
+            )
         candidates.extend(sorted((root / "assets").glob("**/*")))
+        candidates.extend(sorted((root / "runs" / "visual-audit-pages").glob("*.png")))
     files = sorted({path.resolve() for path in candidates if path.is_file()}, key=lambda path: path.as_posix())
     inputs = [
         QualityInput(
@@ -238,8 +252,9 @@ def _is_upstream_quality_input(path: str) -> bool:
             "planning/curriculum-blueprint.md",
             "research/source-ledger.jsonl",
             "research/assumption-ledger.jsonl",
+            "research/claim-classifications.jsonl",
             "chapters/chapter-01-sample.approved",
-            "runs/token-budget.json",
+            "runs/token-budget.json#policy",
         }
         or path.startswith(
             (
@@ -248,6 +263,7 @@ def _is_upstream_quality_input(path: str) -> bool:
                 "runs/humanize/chapter-",
                 "runs/editorial/chapter-",
                 "runs/review-batches/",
+                "runs/illustrations/asset-checks/",
             )
         )
     )

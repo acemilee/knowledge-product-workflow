@@ -10,15 +10,24 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from knowledge_product_workflow.claim_classification import validate_nonfactual_claim_boundaries
+from knowledge_product_workflow.code_quality import validate_code_blocks
 from knowledge_product_workflow.content_plan import ContentPlanError, require_current_content_plan
+from knowledge_product_workflow.content_quality import scan_markdown_content
 from knowledge_product_workflow.developmental import (
     DevelopmentalEditError,
+    developmental_report_path,
     require_current_developmental_report,
 )
 from knowledge_product_workflow.diagrams import validate_current_diagram_assets
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
-from knowledge_product_workflow.humanize import HumanizeReportError, require_current_humanize_report
+from knowledge_product_workflow.humanize import (
+    HumanizeReportError,
+    humanize_report_path,
+    require_current_humanize_report,
+)
 from knowledge_product_workflow.models import ArtifactMetadata, ArtifactStatus
+from knowledge_product_workflow.presentation_validation import validate_presentation_markdown
 from knowledge_product_workflow.quality import QualityFinding, Severity
 from knowledge_product_workflow.user_decisions import UserDecisionTarget, invalidate_user_decision
 from knowledge_product_workflow.workflows.authoring import (
@@ -45,7 +54,7 @@ _COMPLETE_ANSWER = re.compile(
     re.IGNORECASE,
 )
 _SUPPORTED_COMPONENTS = frozenset(
-    {"kp-source", "kp-key-takeaway", "kp-practice", "kp-note", "kp-decision", "kp-procedure", "kp-worksheet"}
+    {"kp-source", "kp-key-takeaway", "kp-practice", "kp-note", "kp-decision", "kp-procedure", "kp-worksheet", "kp-percentage-distribution", "kp-chapter-lead"}
 )
 _VISIBLE_TEXT = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]")
 
@@ -571,6 +580,16 @@ def _validate_components(body: str, path: Path, workspace: Workspace) -> list[Qu
     return findings
 
 
+def validate_chapter_reader_content(workspace: Workspace, path: Path, body: str) -> list[QualityFinding]:
+    """Use the same local reader checks before submission and at full-book validation."""
+    location = _relative_path(workspace, path)
+    return [
+        *scan_markdown_content(body, location),
+        *validate_code_blocks(body, location),
+        *validate_presentation_markdown(body, location, workspace),
+    ]
+
+
 def _validate_compliance_mapping(
     body: str,
     chapter: BlueprintChapter,
@@ -715,6 +734,7 @@ def validate_chapter_submission(
     submission: ChapterComplianceSubmission,
     *,
     path: Path | None = None,
+    include_reader_content: bool = True,
 ) -> list[QualityFinding]:
     """Validate a body and mapping against the one current, approved chapter contract."""
     destination = path or workspace.root / "chapters" / f"chapter-{chapter_number:02d}.md"
@@ -748,7 +768,14 @@ def validate_chapter_submission(
         )
     findings.extend(_validate_heading_tree(body, chapter, destination, workspace))
     findings.extend(_validate_components(body, destination, workspace))
+    if include_reader_content:
+        findings.extend(validate_chapter_reader_content(workspace, destination, body))
     findings.extend(_validate_compliance_mapping(body, chapter, submission, destination, workspace))
+    findings.extend(
+        validate_nonfactual_claim_boundaries(
+            workspace, chapter_number, body, chapter.claim_ids, submission.claim_locations
+        )
+    )
     findings.extend(_validate_interview_policy(body, chapter, destination, workspace))
     findings.extend(validate_current_diagram_assets(workspace, destination, body))
     for line_number, line in _visible_lines(body):
@@ -767,6 +794,93 @@ def validate_chapter_submission(
 
 def compliance_path(workspace: Workspace, chapter_number: int) -> Path:
     return workspace.root / "runs" / "chapter-compliance" / f"chapter-{chapter_number:02d}.json"
+
+
+def check_chapter(workspace: Workspace, chapter_number: int, source_path: Path) -> dict[str, object]:
+    """Read-only preflight for a candidate chapter and its bound proof chain."""
+    source = _require_workspace_file(workspace, source_path, label="章节源稿")
+    body = _reader_body_from_source(source).strip() + "\n"
+    report: dict[str, object] = {
+        "chapter_number": chapter_number,
+        "source": _relative_path(workspace, source),
+        "source_sha256": _sha256_text(body),
+        "checks": {},
+        "refresh_actions": [],
+    }
+    checks: dict[str, object] = report["checks"]  # type: ignore[assignment]
+    actions: list[str] = report["refresh_actions"]  # type: ignore[assignment]
+    try:
+        contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
+        checks["contract"] = {"state": "current", "path": _relative_path(workspace, contract_path)}
+    except ChapterContractRequiredError as error:
+        checks["contract"] = {"state": "blocked", "reason": str(error)}
+        actions.append("修复并批准当前章节合约")
+        return report
+    try:
+        plan = require_current_content_plan(workspace, chapter_number)
+        checks["content_plan"] = {"state": "current" if plan is not None else "not_required"}
+    except ContentPlanError as error:
+        state = "stale" if "过期" in str(error) else "missing" if "缺少" in str(error) else "blocked"
+        checks["content_plan"] = {"state": state, "reason": str(error)}
+        actions.append(f"kp content-plan-template {chapter_number} --workspace <工作区>")
+    findings = [
+        *validate_chapter_reader_content(workspace, source, body),
+        *_validate_heading_tree(body, chapter, source, workspace),
+        *_validate_components(body, source, workspace),
+    ]
+    pending_assets = [item.model_dump(mode="json") for item in findings if item.code == "PRESENTATION_ASSET_MISSING"]
+    findings = [item for item in findings if item.code != "PRESENTATION_ASSET_MISSING"]
+    checks["source_structure"] = {
+        "state": "blocked" if any(item.severity is Severity.BLOCKER for item in findings) else "current",
+        "findings": [finding.model_dump(mode="json") for finding in findings],
+        "pending_assets": pending_assets,
+        "expected_heading": f"{chapter_number}. {chapter.title}",
+        "actual_headings": _heading_candidates(body),
+    }
+    if any(item.severity is Severity.BLOCKER for item in findings):
+        actions.append("先修正章节源稿结构与读者组件")
+    for name, required, command in (
+        ("developmental_report", require_current_developmental_report, "developmental-check"),
+        ("humanize_report", require_current_humanize_report, "humanize-check"),
+    ):
+        if name == "humanize_report" and not _requires_chinese_humanize(workspace):
+            checks[name] = {"state": "not_required"}
+            continue
+        try:
+            proof = required(workspace, chapter_number, body, contract_path)
+            proof_path = (humanize_report_path if name == "humanize_report" else developmental_report_path)(workspace, chapter_number)
+            checks[name] = {"state": "current" if proof is not None else "not_required",
+                            "reusable": proof is not None,
+                            "path": _relative_path(workspace, proof_path) if proof is not None else None,
+                            "reuse_reason": "current_body_contract_and_diagram_semantics" if proof is not None else None}
+        except (DevelopmentalEditError, HumanizeReportError) as error:
+            state = "stale" if "过期" in str(error) else "missing" if "缺少" in str(error) else "blocked"
+            checks[name] = {"state": state, "reason": str(error), "reusable": False}
+            actions.append(f"kp {command} {chapter_number} --workspace <工作区> --from <章节源稿>")
+    diagram_findings = validate_current_diagram_assets(
+        workspace, workspace.root / "chapters" / f"chapter-{chapter_number:02d}.md", body
+    )
+    checks["diagram_assets"] = {
+        "state": "blocked" if any(item.severity is Severity.BLOCKER for item in diagram_findings) else "current",
+        "visual_review_required": any(item.severity is Severity.WARNING for item in diagram_findings),
+        "findings": [finding.model_dump(mode="json") for finding in diagram_findings],
+    }
+    if any(item.severity is Severity.BLOCKER for item in diagram_findings):
+        actions.append("按当前源稿重建受控图表资产")
+    record_path = compliance_path(workspace, chapter_number)
+    if not record_path.is_file():
+        checks["compliance_mapping"] = {"state": "missing"}
+    else:
+        try:
+            record = ChapterCompliance.model_validate_json(record_path.read_text(encoding="utf-8"))
+            current = record.chapter_body_sha256 == _sha256_text(body) and record.contract_sha256 == _sha256_file(contract_path)
+            checks["compliance_mapping"] = {"state": "current" if current else "stale"}
+        except (OSError, ValueError):
+            checks["compliance_mapping"] = {"state": "blocked", "reason": "合规映射无法读取"}
+    if checks["compliance_mapping"]["state"] != "current":
+        actions.append(f"kp chapter-compliance-template {chapter_number} --workspace <工作区> --from <章节源稿>")
+        actions.append(f"kp submit-chapter {chapter_number} --workspace <工作区> --from <章节源稿> --compliance <合规映射>")
+    return report
 
 
 def submit_chapter(
@@ -858,40 +972,49 @@ def submit_chapter(
         **mapping.model_dump(),
     )
     findings = validate_chapter_submission(workspace, chapter_number, body, submission, path=destination)
-    if findings:
-        primary = findings[0]
+    blockers = [item for item in findings if item.severity is Severity.BLOCKER]
+    if blockers:
+        primary = blockers[0]
         raise _submission_error(
             workspace,
             chapter_number=chapter_number,
             code=primary.code,
-            message="；".join(finding.message for finding in findings[:3]),
+            message="；".join(finding.message for finding in blockers[:3]),
             artifacts=[source, mapping_file, destination],
             next_command=f"kp chapter-compliance-template {chapter_number} --workspace <工作区> --from <工作区内章节源稿>",
             findings=findings,
         )
+    stale_reports: list[str] = []
+    refresh_commands: list[str] = []
     try:
         require_current_developmental_report(workspace, chapter_number, body, contract_path)
     except DevelopmentalEditError as error:
-        raise _submission_error(
-            workspace,
-            chapter_number=chapter_number,
-            code="DEVELOPMENTAL_REPORT_REQUIRED",
-            message=str(error),
-            artifacts=[source],
-            next_command=f"kp developmental-check {chapter_number} --workspace <工作区> --from <工作区内章节源稿>",
-        ) from error
+        stale_reports.append(f"发展性报告：{error}")
+        refresh_commands.append(f"kp developmental-check {chapter_number} --workspace <工作区> --from <章节源稿>")
     if _requires_chinese_humanize(workspace):
         try:
             require_current_humanize_report(workspace, chapter_number, body, contract_path)
         except HumanizeReportError as error:
-            raise _submission_error(
-                workspace,
-                chapter_number=chapter_number,
-                code="HUMANIZE_REPORT_REQUIRED",
-                message=str(error),
-                artifacts=[source],
-                next_command=f"kp humanize-check {chapter_number} --workspace <工作区> --from <工作区内章节源稿>",
-            ) from error
+            stale_reports.append(f"中文终稿报告：{error}")
+            refresh_commands.append(f"kp humanize-check {chapter_number} --workspace <工作区> --from <章节源稿>")
+    if stale_reports:
+        raise _submission_error(
+            workspace,
+            chapter_number=chapter_number,
+            code="CHAPTER_FINAL_REPORTS_STALE",
+            message="；".join(stale_reports),
+            artifacts=[source],
+            next_command="；".join(refresh_commands),
+        )
+    sample_marker = workspace.root / "chapters/chapter-01-sample.approved"
+    sample_body_changed = False
+    if chapter_number == 1 and sample_marker.is_file():
+        from knowledge_product_workflow.content_checkpoint import checkpoint_path
+        for prior_proof in (compliance_path(workspace, 1), checkpoint_path(workspace, 1)):
+            if prior_proof.is_file():
+                previous = json.loads(prior_proof.read_text(encoding="utf-8"))
+                sample_body_changed = previous.get("chapter_body_sha256") != submission.chapter_body_sha256
+                break
     prior_version = draft_metadata.version
     metadata = ArtifactMetadata(
         book_id=workspace.root.name,
@@ -901,11 +1024,19 @@ def submit_chapter(
         depends_on=[str(contract_path.relative_to(workspace.root))],
     )
     destination.write_text(render_markdown_artifact(metadata, body), encoding="utf-8")
-    if chapter_number == 1:
+    if sample_body_changed:
+        history = workspace.root / "runs/interaction/history"
+        history.mkdir(parents=True, exist_ok=True)
+        archive = history / f"sample-before-body-change-v{prior_version}.approved"
+        if not archive.exists():
+            archive.write_bytes(sample_marker.read_bytes())
+        sample_marker.unlink()
+    if chapter_number == 1 and (sample_body_changed or not sample_marker.is_file()):
         invalidate_user_decision(
             workspace,
             UserDecisionTarget.SAMPLE,
             reason="第一章样章正文已重新提交",
+            include_consumed=sample_body_changed,
         )
     record = ChapterCompliance(
         **submission.model_dump(),
@@ -942,7 +1073,9 @@ def validate_current_chapter_compliance(workspace: Workspace, chapter_path: Path
         return [_finding("CHAPTER_COMPLIANCE_STALE", chapter_path, workspace, "章节合规映射 JSON 无效。")]
     if record.chapter_version != parse_markdown_artifact(chapter_path.read_text(encoding="utf-8"))[0].version:
         return [_finding("CHAPTER_COMPLIANCE_STALE", chapter_path, workspace, "章节合规映射绑定的正文版本已过期。")]
-    findings = validate_chapter_submission(workspace, chapter_number, body, record, path=chapter_path)
+    findings = validate_chapter_submission(
+        workspace, chapter_number, body, record, path=chapter_path, include_reader_content=False
+    )
     try:
         contract_path, _ = require_current_chapter_contract(workspace, chapter_number)
         require_current_content_plan(workspace, chapter_number)

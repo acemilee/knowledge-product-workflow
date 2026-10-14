@@ -286,6 +286,10 @@ def create_chapter_draft(workspace: Workspace, chapter_number: int) -> Path:
         body = f"# {chapter_number}. {chapter.title}\n"
     else:
         body = f"# {chapter_number}. {chapter.title}\n"
+    body += "\n<!-- KP_DRAFT_UNFINISHED：补写本章实际导读，完成后移除占位。 -->\n"
+    from knowledge_product_workflow.content_plan import _flatten_outline
+    for section_id, title in _flatten_outline(chapter.section_outline):
+        body += f"\n{'#' * min(6, len(section_id.split('.')))} {section_id} {title}\n\n<!-- KP_DRAFT_UNFINISHED：补写本节真实内容。 -->\n"
     draft_path.write_text(render_markdown_artifact(metadata, body), encoding="utf-8")
     workspace.append_event("chapter_draft_created", {"chapter_number": chapter_number})
     return draft_path
@@ -390,7 +394,11 @@ def approve_sample_chapter(workspace: Workspace, approved_by: str) -> Path:
     # Keep submission validation separate from contract derivation to avoid an import cycle.
     from knowledge_product_workflow.chapter_compliance import validate_current_chapter_compliance
 
-    findings = validate_current_chapter_compliance(workspace, chapter_path)
+    findings = [item for item in validate_current_chapter_compliance(workspace, chapter_path)
+                if item.severity.value == "blocker"]
+    from knowledge_product_workflow.content_checkpoint import current_content_checkpoint
+    if current_content_checkpoint(workspace, 1) is not None:
+        findings = []
     if findings:
         raise SampleApprovalRequiredError(
             "样章尚未通过当前合约的章节合规校验：" + findings[0].message

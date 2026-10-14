@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_serializer
 
 from knowledge_product_workflow.detail_constraints import DetailConstraints
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
@@ -37,7 +37,61 @@ _TARGET_AUDIENCE_BLOCK = re.compile(
 )
 
 
-class BriefRevisionCandidate(BaseModel):
+class BriefSemanticFields(BaseModel):
+    """Reader goals carried by the approved Brief, including partial amendments."""
+
+    learning_outcomes: list[str] = Field(default_factory=list, max_length=12)
+    product_positioning: str | None = Field(default=None, max_length=600)
+    scope_inclusions: list[str] = Field(default_factory=list, max_length=20)
+    scope_exclusions: list[str] = Field(default_factory=list, max_length=20)
+    fixed_inputs: list[str] = Field(default_factory=list, max_length=100)
+    reader_request: str | None = Field(default=None, min_length=1, max_length=8000)
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_semantics(self, handler):
+        value = handler(self)
+        if not self.fixed_inputs:
+            value.pop("fixed_inputs", None)
+        if self.reader_request is None:
+            value.pop("reader_request", None)
+        return value
+
+    @field_validator("learning_outcomes", "scope_inclusions", "scope_exclusions", "fixed_inputs")
+    @classmethod
+    def clean_items(cls, values):
+        if any(not item.strip() or len(item.strip()) > 600 for item in values):
+            raise ValueError("学习成果/范围每项须为1—600个字符")
+        return [item.strip() for item in values]
+
+    @field_validator("product_positioning", "reader_request")
+    @classmethod
+    def clean_positioning(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("产品定位不能为空白")
+        return value.strip() if value else None
+
+
+def parse_brief_semantics(body: str) -> BriefSemanticFields:
+    """Read the human-visible lists; legacy generic paragraphs remain defaults."""
+    def section(name):
+        match = re.search(r"^## " + name + r"\s*\n+(.*?)(?=^## |\Z)", body, re.MULTILINE | re.DOTALL)
+        return match.group(1).strip() if match else ""
+
+    outcomes = re.findall(r"^- (.+)$", section("(?:学习成果|Learning outcomes)"), re.MULTILINE)
+    positioning = section("(?:产品定位|Product positioning)")
+    if positioning in {"面向中文用户、可审计且可交付的专业知识教程。",
+                       "An auditable, deliverable professional knowledge tutorial for English-speaking readers."}:
+        positioning = None
+    scope = section("(?:范围与排除项|Scope and exclusions)")
+    parts = re.split(r"^(?:不覆盖：|Exclusions:)\s*$", scope, flags=re.MULTILINE)
+    included = re.findall(r"^- (.+)$", parts[0], re.MULTILINE)
+    excluded = re.findall(r"^- (.+)$", parts[1], re.MULTILINE) if len(parts) > 1 else []
+    return BriefSemanticFields(learning_outcomes=outcomes, product_positioning=positioning,
+                              scope_inclusions=included, scope_exclusions=excluded,
+                              fixed_inputs=re.findall(r"^- (.+)$", section("(?:固定教学输入|Fixed teaching inputs)"), re.MULTILINE))
+
+
+class BriefRevisionCandidate(BriefSemanticFields):
     """One reviewed, pending Brief revision."""
 
     schema_version: int = 1
@@ -152,12 +206,31 @@ def request_contract_path(workspace: Workspace) -> Path:
     return workspace.root / "runs" / "request-contract.yaml"
 
 
+def require_original_reader_request(workspace: Workspace, semantics: BriefSemanticFields | None = None,
+                                    *, persisted: bool = False) -> None:
+    """新托管路径保护捕获原文；旧档案不静默升级，不声称机器证明理解完整。"""
+    from knowledge_product_workflow.runtime import _read_orchestration_state
+    state = _read_orchestration_state(workspace)
+    if state is None or state.request_capture_revision < 1:
+        return
+    if persisted:
+        contract = read_request_contract(workspace) or {}
+        original = contract.get('requirements', {}).get('reader_request', {}).get('value')
+        if (not isinstance(original, str) or not original.strip()
+                or contract.get('reader_request_sha256') != _sha256_bytes(original.encode('utf-8'))):
+            raise ValueError('缺少当前原始读者需求或捕获记录已变化；以当前原文重新生成Brief预览，不能跳过审批。')
+    elif semantics is None or not semantics.reader_request:
+        raise ValueError('新托管Brief必须保留原始读者需求；宿主将当前原文放入 --from 输入的 reader_request 后重试。')
+
+
 def write_request_contract(
     workspace: Workspace,
     topic: str,
     target_audience: str,
     constraints: DetailConstraints,
     requirement_sources: dict[str, str],
+    brand_color_intent: str | None = None,
+    semantics: BriefSemanticFields | None = None,
 ) -> Path:
     """Persist resolved Brief values together with their source classification."""
     values = constraints.model_dump(mode="json")
@@ -179,6 +252,19 @@ def write_request_contract(
             )
         },
     }
+    payload["requirements"]["brand_color_intent"] = {
+        "value": brand_color_intent or "橙色基调",
+        "source": requirement_sources.get("brand_color_intent", "default"),
+    }
+    if semantics is not None:
+        for key in BriefSemanticFields.model_fields:
+            value = getattr(semantics, key)
+            payload["requirements"][key] = {
+                "value": value, "source": requirement_sources.get(key, "model_recommendation")
+            }
+        if semantics.reader_request:
+            payload['reader_request_sha256'] = _sha256_bytes(semantics.reader_request.encode('utf-8'))
+            payload['requirements']['reader_request']['source'] = 'user_explicit'
     output = request_contract_path(workspace)
     output.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return output
@@ -201,8 +287,12 @@ def render_product_brief_body(
     target_audience: str | None,
     constraints: DetailConstraints | None,
     presentation: PresentationOverrides | None,
+    semantics: BriefSemanticFields | None = None,
 ) -> str:
     """Render the reviewable Brief body for initial creation or a revision."""
+    if semantics and semantics.reader_request:
+        from knowledge_product_workflow.detail_constraints import validate_source_page_intent
+        validate_source_page_intent(semantics.reader_request, constraints)
     constraints_section = f"\n{render_detail_constraints(constraints)}" if constraints else ""
     presentation_section = (
         f"\n{render_presentation_overrides(presentation, constraints.language if constraints else 'zh-CN')}"
@@ -214,6 +304,27 @@ def render_product_brief_body(
         body = f"""# {topic}\n\n## Target readers\n\n{reader_description}\n\n## Learning outcomes\n\nReaders can explain the core concepts, complete verifiable practice, and apply the knowledge in real scenarios.\n\n## Product positioning\n\nAn auditable, deliverable professional knowledge tutorial for English-speaking readers.\n\n## Scope and exclusions\n\nThe tutorial covers concepts, cases, practice, assessment, and engineering methods needed for the topic. It does not replace legal, medical, financial, or other domain-specific professional advice.\n{constraints_section}"""
     else:
         body = f"""# {topic}\n\n## 目标读者\n\n{reader_description}\n\n## 学习成果\n\n能够理解核心概念、完成可验证的实践，并将知识应用到真实场景。\n\n## 产品定位\n\n面向中文用户、可审计且可交付的专业知识教程。\n\n## 范围与排除项\n\n聚焦主题所需的概念、案例、实践、评估与工程化方法；不替代特定业务的法律、医疗或财务专业意见。\n{constraints_section}"""
+    if semantics is not None:
+        english = constraints is not None and constraints.language == "en-US"
+        replacements = {}
+        if semantics.learning_outcomes:
+            replacements["Learning outcomes" if english else "学习成果"] = "\n".join(
+                "- " + item for item in semantics.learning_outcomes
+            )
+        if semantics.product_positioning:
+            replacements["Product positioning" if english else "产品定位"] = semantics.product_positioning
+        if semantics.scope_inclusions or semantics.scope_exclusions:
+            scope = ("Inclusions:" if english else "覆盖：") + "\n\n"
+            scope += "\n".join("- " + item for item in semantics.scope_inclusions)
+            scope += "\n\n" + ("Exclusions:" if english else "不覆盖：") + "\n\n"
+            scope += "\n".join("- " + item for item in semantics.scope_exclusions)
+            replacements["Scope and exclusions" if english else "范围与排除项"] = scope
+        for heading, content in replacements.items():
+            pattern = r"(^## " + re.escape(heading) + r"\s*\n+).*?(?=^## |\Z)"
+            body = re.sub(pattern, lambda m, value=content: m.group(1) + value + "\n\n", body, flags=re.MULTILINE | re.DOTALL)
+    if semantics and semantics.fixed_inputs:
+        body += "\n## " + ("Fixed teaching inputs" if constraints and constraints.language == "en-US" else "固定教学输入") + "\n\n"
+        body += "\n".join("- " + item for item in semantics.fixed_inputs) + "\n"
     return body + presentation_section
 
 
@@ -223,8 +334,10 @@ def create_product_brief(
     constraints: DetailConstraints | None = None,
     target_audience: str | None = None,
     presentation: PresentationOverrides | None = None,
+    semantics: BriefSemanticFields | None = None,
 ) -> Path:
     """Create a reviewable product brief without overwriting a prior brief."""
+    require_original_reader_request(workspace, semantics)
     output = workspace.root / "planning" / "product-brief.md"
     if output.exists():
         raise FileExistsError(f"Product brief already exists: {output}")
@@ -234,7 +347,9 @@ def create_product_brief(
         status=ArtifactStatus.READY_FOR_REVIEW,
         version=1,
     )
-    body = render_product_brief_body(topic, target_audience, constraints, presentation)
+    body = render_product_brief_body(topic, target_audience, constraints, presentation, semantics)
+    if semantics and semantics.reader_request and not request_contract_path(workspace).exists():
+        write_request_contract(workspace, topic, target_audience or '', constraints or DetailConstraints(), {}, semantics=semantics)
     output.write_text(render_markdown_artifact(metadata, body), encoding="utf-8")
     workspace.append_event(
         "product_brief_created",
@@ -249,6 +364,7 @@ def replace_unapproved_brief_draft(
     constraints: DetailConstraints | None = None,
     target_audience: str | None = None,
     presentation: PresentationOverrides | None = None,
+    semantics: BriefSemanticFields | None = None,
 ) -> Path:
     """Replace an initial Brief draft while retaining an auditable draft history.
 
@@ -258,7 +374,7 @@ def replace_unapproved_brief_draft(
     """
     output = workspace.root / "planning" / "product-brief.md"
     if not output.is_file():
-        return create_product_brief(workspace, topic, constraints, target_audience, presentation)
+        return create_product_brief(workspace, topic, constraints, target_audience, presentation, semantics)
     metadata, _ = parse_markdown_artifact(output.read_text(encoding="utf-8"))
     if metadata.status is not ArtifactStatus.READY_FOR_REVIEW:
         raise ValueError("当前产品 Brief 已进入审批或生产流程，不能替换初始草案")
@@ -297,7 +413,7 @@ def replace_unapproved_brief_draft(
         created_at=metadata.created_at,
         depends_on=metadata.depends_on,
     )
-    body = render_product_brief_body(topic, target_audience, constraints, presentation)
+    body = render_product_brief_body(topic, target_audience, constraints, presentation, semantics)
     temporary = output.with_suffix(".md.tmp")
     temporary.write_text(render_markdown_artifact(replacement, body), encoding="utf-8")
     temporary.replace(output)
@@ -370,6 +486,10 @@ def approve_brief_amendment(workspace: Workspace, approved_by: str) -> Path:
     if archived.exists():
         raise FileExistsError(f"Brief 历史版本已存在：{archived}")
     archived.write_bytes(brief_path.read_bytes())
+    current_request = read_request_contract(workspace)
+    request_path = request_contract_path(workspace)
+    if request_path.is_file():
+        (history / f"request-contract.v{metadata.version}.yaml").write_bytes(request_path.read_bytes())
     revised = ArtifactMetadata(
         book_id=metadata.book_id,
         artifact_type=metadata.artifact_type,
@@ -384,8 +504,19 @@ def approve_brief_amendment(workspace: Workspace, approved_by: str) -> Path:
         candidate.target_audience,
         candidate.detail_constraints,
         candidate.presentation,
+        candidate,
     )
     brief_path.write_text(render_markdown_artifact(revised, body), encoding="utf-8")
+    sources = {key: item.get("source", "default")
+               for key, item in (current_request or {}).get("requirements", {}).items()}
+    for field in candidate.changed_fields:
+        sources[field] = "approved_revision"
+    if "target_pages" in candidate.changed_fields:
+        sources["page_constraint"] = "approved_revision"
+    write_request_contract(workspace, candidate.topic, candidate.target_audience,
+                           candidate.detail_constraints, sources,
+                           candidate.presentation.brand_color_intent if candidate.presentation else None,
+                           candidate)
     if decision_record is not None:
         consume_approved_user_decision(
             workspace,

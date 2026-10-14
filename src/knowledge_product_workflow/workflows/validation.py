@@ -8,7 +8,14 @@ from knowledge_product_workflow.assumption_ledger import (
     required_assumption_claim_ids,
     validate_assumptions,
 )
-from knowledge_product_workflow.chapter_compliance import validate_current_chapter_compliance
+from knowledge_product_workflow.chapter_compliance import (
+    validate_chapter_reader_content,
+    validate_current_chapter_compliance,
+)
+from knowledge_product_workflow.claim_classification import (
+    factual_claim_ids,
+    validate_classification_ledger,
+)
 from knowledge_product_workflow.claim_quality import validate_undeclared_high_risk_claims
 from knowledge_product_workflow.claims import current_claim_contract_bindings
 from knowledge_product_workflow.code_quality import validate_code_blocks
@@ -23,6 +30,7 @@ from knowledge_product_workflow.publishing import (
     count_pdf_pages,
     delivery_component_leak_findings,
     missing_pdf_source_contracts,
+    pdf_body_page_numbers,
     pdf_font_size_contract_findings,
     release_readiness_findings,
 )
@@ -34,7 +42,6 @@ from knowledge_product_workflow.quality import (
 )
 from knowledge_product_workflow.quality_exceptions import apply_controlled_exceptions
 from knowledge_product_workflow.source_ledger import validate_claims
-from knowledge_product_workflow.token_budget import token_budget_findings
 from knowledge_product_workflow.workflows.curriculum import parse_chapter_budgets
 from knowledge_product_workflow.workflows.product_brief import parse_detail_constraints
 from knowledge_product_workflow.workspace import Workspace
@@ -105,11 +112,6 @@ _RECOMPUTED_CODES = {
     "RELEASE_BOOK_INPUT_MANIFEST_MISSING",
     "RELEASE_BOOK_INPUT_MANIFEST_INVALID",
     "RELEASE_INPUT_HASH_MISMATCH",
-    "TOKEN_BUDGET_MISSING",
-    "TOKEN_BUDGET_INVALID",
-    "TOKEN_BUDGET_ACTION_UNFINISHED",
-    "TOKEN_BUDGET_ACTION_FAILED",
-    "TOKEN_BUDGET_EXHAUSTED",
     "CONTENT_PLAN_REQUIRED",
     "DEVELOPMENTAL_REPORT_REQUIRED",
     "PDF_PREVIEW_MANIFEST_REQUIRED",
@@ -229,6 +231,12 @@ def validate_detail_constraints(workspace: Workspace, include_pdf: bool = False)
     findings.extend(delivery_component_leak_findings(workspace, include_pdf=True))
     findings.extend(validate_pdf_visual_contract(workspace))
     page_budget = constraints.page_budget
+    if page_budget and page_budget.scope.value == "body_only":
+        try:
+            page_count = len(pdf_body_page_numbers(workspace, pdf_path))
+        except ValueError as error:
+            findings.append(QualityFinding(code="PDF_BODY_PAGE_RANGE_UNVERIFIED", severity=Severity.BLOCKER, location="delivery/book.pdf", message=str(error)))
+            return findings
     if page_budget and page_budget.minimum is not None and page_count < page_budget.minimum:
         scope_label = "正文" if page_budget.scope.value == "body_only" else "最终 PDF"
         upper = f"-{page_budget.maximum}" if page_budget.maximum is not None else ""
@@ -250,11 +258,17 @@ def validate_detail_constraints(workspace: Workspace, include_pdf: bool = False)
                 severity=Severity.BLOCKER,
                 location="delivery/book.pdf",
                 message=(
-                    f"PDF 当前为 {page_count} 页，超出已批准页数约束的上限 "
+                    f"{'正文' if page_budget.scope.value == 'body_only' else 'PDF'}当前为 {page_count} 页，超出已批准页数约束的上限 "
                     f"{page_budget.maximum} 页。"
                 ),
             )
         )
+    if page_budget and page_budget.assess(page_count) == "preferred_deviation":
+        findings.append(QualityFinding(
+            code="PDF_PREFERRED_PAGE_RANGE_DEVIATION", severity=Severity.WARNING,
+            location="delivery/book.pdf",
+            message=f"当前{page_count}页，未达到首选{page_budget.preferred_minimum}-{page_budget.preferred_maximum}页；硬边界未超限，不能宣称篇幅目标已经达到。",
+        ))
     if count_pdf_bookmarks(pdf_path) == 0:
         findings.append(
             QualityFinding(
@@ -287,25 +301,7 @@ def validate_reader_content(
     findings: list[QualityFinding] = []
     for chapter_path in sorted(workspace.root.joinpath("chapters").glob("chapter-[0-9][0-9].md")):
         _, chapter_body = parse_markdown_artifact(chapter_path.read_text(encoding="utf-8"))
-        findings.extend(
-            scan_markdown_content(
-                chapter_body,
-                str(chapter_path.relative_to(workspace.root)).replace("\\", "/"),
-            )
-        )
-        findings.extend(
-            validate_code_blocks(
-                chapter_body,
-                str(chapter_path.relative_to(workspace.root)).replace("\\", "/"),
-            )
-        )
-        findings.extend(
-            validate_presentation_markdown(
-                chapter_body,
-                str(chapter_path.relative_to(workspace.root)).replace("\\", "/"),
-                workspace,
-            )
-        )
+        findings.extend(validate_chapter_reader_content(workspace, chapter_path, chapter_body))
         findings.extend(validate_current_chapter_compliance(workspace, chapter_path))
         findings.extend(validate_undeclared_high_risk_claims(workspace, chapter_path, chapter_body))
     book_path = workspace.root / "delivery" / "book.md"
@@ -326,16 +322,18 @@ def _collect_validation_findings(
         claim_bindings = current_claim_contract_bindings(workspace)
     except (OSError, ValueError):
         claim_bindings = {}
-    required_claims = set(claim_bindings) if claim_bindings else (claim_ids or set())
-    findings = validate_claims(
+    required_claims = factual_claim_ids(workspace, claim_bindings) if claim_bindings else (claim_ids or set())
+    findings = validate_classification_ledger(workspace)
+    findings.extend(validate_claims(
         required_claims | required_assumption_claim_ids(assumption_ledger),
         workspace.root / "research" / "source-ledger.jsonl",
         expected_contract_sha256=claim_bindings or None,
-    )
+    ))
     findings.extend(validate_assumptions(assumption_ledger))
     findings.extend(validate_detail_constraints(workspace))
     findings.extend(validate_reader_content(workspace))
-    findings.extend(token_budget_findings(workspace))
+    from knowledge_product_workflow.illustration_budget import image_budget_findings
+    findings.extend(image_budget_findings(workspace))
     brief_path = workspace.root / "planning" / "product-brief.md"
     if brief_path.is_file():
         _, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))

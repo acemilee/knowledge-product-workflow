@@ -52,7 +52,7 @@ def _environment_ready() -> bool:
     if result.exit_code != 0:
         return False
     checks = json.loads(result.output)
-    required = ["quarto", "xelatex", "microsoft_yahei", "d2", "diagram_browser"]
+    required = ["quarto", "xelatex", "pingfang_sc", "pingfang_sc_semibold", "inter", "jetbrains_mono", "d2", "diagram_browser"]
     return all(checks.get(name, {}).get("available") for name in required)
 
 
@@ -92,6 +92,7 @@ def _decide_and_approve(runner: CliRunner, workspace: Path, target: str, artifac
 def _write_brief_input(workspace: Workspace) -> Path:
     payload = {
         "topic": "决策树分类器的最小验证闭环",
+        "reader_request": f"面向能完成基础实验的中文入门读者，制作决策树分类器的最小验证闭环教程，交付Markdown和PDF，总计{EXPECTED_PDF_PAGES}页；解释熵如何选择切分，区分训练集拟合与验证集泛化。",
         "target_audience": "需要理解机器学习分类器基础并能完成一次可验证实验的中文初学者",
         "target_pages": EXPECTED_PDF_PAGES,
         "language": "中文",
@@ -172,6 +173,10 @@ def _write_chapter_source(workspace: Workspace) -> Path:
     source = workspace.root / "runs" / "chapter-01-source.md"
     source.write_text(
         """# 1. 决策树分类器的最小验证闭环
+
+::: {.kp-chapter-lead}
+理解一次分类实验，先要分清切分依据、训练过程和验证结果。本章用信息熵说明如何选择候选切分，再以代码和记录表组织实验，让读者判断哪些结果需要继续复核，而不是把代码运行成功当作模型可靠的证明。
+:::
 
 ## 1.1 熵如何帮助选择切分
 
@@ -323,7 +328,6 @@ def _run_golden_path(tmp_path: Path) -> Workspace:
     )
     _invoke(runner, ["update-publication", "--workspace", str(workspace.root), "--from", str(publication)])
     _invoke(runner, ["update-publication", "--workspace", str(workspace.root), "--from", str(publication), "--confirm"])
-    _invoke(runner, ["freeze-token-budget", "--workspace", str(workspace.root), "--mode", "lean"])
 
     _invoke(runner, ["length-recommendation-template", "--workspace", str(workspace.root)])
     recommendation = _write_length_recommendation(workspace)
@@ -380,6 +384,15 @@ def _run_golden_path(tmp_path: Path) -> Workspace:
             str(chapter_source),
         ],
     )
+    # This is an explicitly simulated golden path, not a real reader acceptance.
+    from tests.test_illustration_style import review as simulated_asset_review
+    diagram_id = json.loads(diagram_input.read_text(encoding="utf-8"))["diagram_id"]
+    _invoke(runner, ["illustration-style-template", diagram_id, "--workspace", str(workspace.root)])
+    style_input = workspace.root / "runs/simulated-asset-style.json"
+    style_input.write_text(simulated_asset_review(diagram_id=diagram_id, reviewed_by="单元测试模拟风格观察").model_dump_json(), encoding="utf-8")
+    _invoke(runner, ["record-illustration-style-check", "--workspace", str(workspace.root), "--from", str(style_input)])
+    from tests.test_structure_review_v133 import simulated_review
+    simulated_review(workspace, chapter_source)
     _invoke(runner, ["developmental-check", "1", "--workspace", str(workspace.root), "--from", str(chapter_source)])
     _invoke(runner, ["humanize-check", "1", "--workspace", str(workspace.root), "--from", str(chapter_source)])
     _invoke(
@@ -433,8 +446,10 @@ def test_host_simulation_golden_path_and_p0_recovery(tmp_path: Path) -> None:
 
     # 首次交付校验：视觉复核 -> validate-delivery（进入交付质量报告有效状态）。
     initial_status = inspect_workflow(workspace)
-    if initial_status.stage == "delivery_validation_pending":
-        _invoke(runner, ["record-pdf-visual-review", "--workspace", str(workspace.root), "--by", "用户"])
+    if initial_status.stage == "pdf_visual_audit_pending":
+        _invoke(runner, ["audit-pdf-visual", "--workspace", str(workspace.root)])
+    if inspect_workflow(workspace).stage in {"delivery_validation_pending", "pdf_manual_review_pending"}:
+        _invoke(runner, ["record-pdf-visual-review", "--workspace", str(workspace.root), "--by", "用户", "--confirm-manual-coverage", "--confirm-content", "--response", "单元测试模拟用户已检查当前全部页面并批准内容与版式；不是真实产品批准。"])
         _invoke(runner, ["validate-delivery", "--workspace", str(workspace.root)])
         before_text = "".join(page.extract_text() or "" for page in PdfReader(pdf).pages)
         with pdf.open("ab") as handle:
@@ -442,9 +457,9 @@ def test_host_simulation_golden_path_and_p0_recovery(tmp_path: Path) -> None:
         after_text = "".join(page.extract_text() or "" for page in PdfReader(pdf).pages)
         assert before_text == after_text, "恢复探针意外改变了 PDF 读者文本"
 
-    # P0 恢复闭环：篡改 PDF 使交付质量报告过期 -> 恢复工单唯一授权 validate-delivery。
+    # P0 恢复闭环：PDF 字节改变后先修复预览，再重新校验交付质量。
     stale_status = inspect_workflow(workspace)
-    assert stale_status.stage == "delivery_quality_report_stale", f"未触发报告过期状态：{stale_status.stage}"
+    assert stale_status.stage == "pdf_preview_repair_pending", stale_status.stage
     live_orders = [
         read_orchestration_work_order(workspace, path)
         for path in (workspace.root / "runs" / "orchestration" / "work-orders").glob("*.json")
@@ -462,18 +477,22 @@ def test_host_simulation_golden_path_and_p0_recovery(tmp_path: Path) -> None:
             "--work-order-id",
             previous_work_order_id,
             "--reason",
-            "自检：将发布工单切换到报告过期恢复工单",
+            "自检：将发布工单切换到 PDF 预览恢复工单",
         ],
     )
     _invoke(runner, ["orchestration-plan", "--workspace", str(workspace.root)])
     recovery_status = inspect_workflow(workspace)
     assert recovery_status.current_work_order is not None, "恢复阶段未创建当前工单"
     recovery_order = read_orchestration_work_order(workspace, recovery_status.current_work_order)
-    assert recovery_order.allowed_commands == ["validate-delivery"], recovery_order.allowed_commands
+    assert recovery_order.allowed_commands == ["repair-pdf-preview"], recovery_order.allowed_commands
+    _invoke(runner, ["repair-pdf-preview", "--workspace", str(workspace.root)])
+    if inspect_workflow(workspace).stage == "pdf_visual_audit_pending":
+        _invoke(runner, ["audit-pdf-visual", "--workspace", str(workspace.root)])
+    _invoke(runner, ["record-pdf-visual-review", "--workspace", str(workspace.root), "--by", "用户", "--confirm-manual-coverage", "--confirm-content", "--response", "单元测试模拟用户已检查当前全部页面并批准内容与版式；不是真实产品批准。"])
+    assert inspect_workflow(workspace).stage == "delivery_quality_report_stale"
     require_delivery_orchestration_ready(workspace, "validate-delivery")
 
-    # 重新视觉复核（PDF 哈希已变化）-> 重新校验 -> 发布。
-    _invoke(runner, ["record-pdf-visual-review", "--workspace", str(workspace.root), "--by", "用户"])
+    # 当前预览恢复后重新视觉复核，再校验并发布。
     _invoke(runner, ["validate-delivery", "--workspace", str(workspace.root)])
     _invoke(runner, ["publish", "--workspace", str(workspace.root)])
 
@@ -502,11 +521,12 @@ def test_host_simulation_golden_path_and_p0_recovery(tmp_path: Path) -> None:
         "run_intent_completed": run_intent is not None and run_intent.state.value == "completed",
         "no_live_work_orders": not pending,
         "terminal_proofs_complete": not proof_missing,
-        "recovery_work_order_authorized": recovery_order.allowed_commands == ["validate-delivery"],
+        "recovery_work_order_authorized": recovery_order.allowed_commands == ["repair-pdf-preview"],
         "delivery_report_publishable": report.publishable,
         "reader_content_has_no_internal_leak": not forbidden,
         "pdf_pages_within_target": pages == EXPECTED_PDF_PAGES,
-        "v5_publication_profile": "knowledge-product-pdf-v5" in (workspace.root / "delivery" / "publication-metadata.yaml").read_text(encoding="utf-8"),
+        "v6_publication_profile": "knowledge-product-pdf-v6" in (workspace.root / "delivery" / "publication-metadata.yaml").read_text(encoding="utf-8"),
+        "visual_audit_bound": (workspace.root / "runs" / "visual-audit-report.json").is_file(),
         "content_plan_bound": (workspace.root / "chapters" / "chapter-01-content-plan.yaml").is_file(),
         "developmental_report_bound": (workspace.root / "runs" / "editorial" / "chapter-01-developmental-report.json").is_file(),
         "preview_manifest_bound": (workspace.root / "runs" / "pdf-preview" / "preview-manifest.json").is_file(),

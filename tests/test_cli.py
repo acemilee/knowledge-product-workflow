@@ -24,6 +24,13 @@ from knowledge_product_workflow.workspace import Workspace
 from tests.blueprint_support import submit_test_blueprint
 
 
+def _current_brief_input(workspace_path, *, topic, audience, reader_request, **values):
+    path = workspace_path / "runs/test-brief-input.json"
+    path.write_text(json.dumps({"topic": topic, "target_audience": audience,
+        "audience_level": "进阶", "reader_request": reader_request, **values}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def _approve_brief_decision(workspace: Workspace, identity: str = "用户") -> None:
     request_user_decision(workspace, UserDecisionTarget.BRIEF)
     record_user_decision(
@@ -57,6 +64,9 @@ def test_brief_approval_and_outline_template_run_through_the_cli(tmp_path) -> No
     workspace_path = tmp_path / "ai-agent-foundations"
 
     assert runner.invoke(app, ["init", "ai-agent-foundations", "--root", str(tmp_path)]).exit_code == 0
+    supplied = _current_brief_input(workspace_path, topic="AI Agent development",
+        audience="准备从事 AI Agent 开发的工程师", target_words=1,
+        reader_request="为准备从事 AI Agent 开发的进阶工程师写一份AI Agent development教程；测试夹具字数目标为1。")
     assert (
         runner.invoke(
             app,
@@ -66,12 +76,7 @@ def test_brief_approval_and_outline_template_run_through_the_cli(tmp_path) -> No
                 "--workspace",
                 str(workspace_path),
                 "--no-interactive",
-                "--target-audience",
-                "准备从事 AI Agent 开发的工程师",
-                "--audience-level",
-                "进阶",
-                "--target-words",
-                "1",
+                "--from", str(supplied),
                 "--confirm",
             ],
         ).exit_code
@@ -97,6 +102,9 @@ def test_explicit_approval_identity_overrides_the_workspace_default(tmp_path) ->
     runner = CliRunner()
     workspace_path = tmp_path / "guide"
     assert runner.invoke(app, ["init", "guide", "--root", str(tmp_path)]).exit_code == 0
+    supplied = _current_brief_input(workspace_path, topic="Guide",
+        audience="需要系统学习知识产品工作流的工程师", target_words=1,
+        reader_request="为需要系统学习知识产品工作流的进阶工程师写一份Guide；测试夹具字数目标为1。")
     assert (
         runner.invoke(
             app,
@@ -106,12 +114,7 @@ def test_explicit_approval_identity_overrides_the_workspace_default(tmp_path) ->
                 "--workspace",
                 str(workspace_path),
                 "--no-interactive",
-                "--target-audience",
-                "需要系统学习知识产品工作流的工程师",
-                "--audience-level",
-                "进阶",
-                "--target-words",
-                "1",
+                "--from", str(supplied),
                 "--confirm",
             ],
         ).exit_code
@@ -131,10 +134,14 @@ def test_explicit_approval_identity_overrides_the_workspace_default(tmp_path) ->
     assert Workspace.open(workspace_path).approval_identity() == "用户"
 
 
-def test_brief_accepts_optional_publication_metadata_without_expanding_required_inputs(tmp_path) -> None:
+def test_brief_accepts_optional_publication_metadata_with_original_request(tmp_path) -> None:
     runner = CliRunner()
     workspace_path = tmp_path / "guide"
     assert runner.invoke(app, ["init", "guide", "--root", str(tmp_path)]).exit_code == 0
+    supplied = _current_brief_input(workspace_path, topic="AI Agent 工程实践",
+        audience="希望转型 AI Agent 开发的程序员", subtitle="从原型到稳定交付", edition="第二版",
+        publication_date="2026-08-01", publisher_label="示例出版社", copyright_line="© 2026 示例出版社",
+        reader_request="为希望转型 AI Agent 开发的进阶程序员写AI Agent 工程实践，副标题从原型到稳定交付，第二版，发布日期2026-08-01，示例出版社，版权© 2026 示例出版社。")
 
     result = runner.invoke(
         app,
@@ -144,20 +151,7 @@ def test_brief_accepts_optional_publication_metadata_without_expanding_required_
             "--workspace",
             str(workspace_path),
             "--no-interactive",
-            "--target-audience",
-            "希望转型 AI Agent 开发的程序员",
-            "--audience-level",
-            "进阶",
-            "--subtitle",
-            "从原型到稳定交付",
-            "--edition",
-            "第二版",
-            "--publication-date",
-            "2026-08-01",
-            "--publisher-label",
-            "示例出版社",
-            "--copyright-line",
-            "版权所有 2026 示例出版社",
+            "--from", str(supplied),
             "--confirm",
         ],
     )
@@ -171,6 +165,26 @@ def test_brief_accepts_optional_publication_metadata_without_expanding_required_
     assert presentation.subtitle == "从原型到稳定交付"
     assert presentation.edition == "第二版"
     assert presentation.publication_date.isoformat() == "2026-08-01"
+
+
+def test_new_cli_brief_requires_original_request_before_creating_artifact(tmp_path):
+    runner = CliRunner()
+    assert runner.invoke(app, ["init", "original-input", "--root", str(tmp_path)]).exit_code == 0
+    workspace = tmp_path / "original-input"
+    path = workspace / "runs/input.json"
+    payload = {"topic": "原文绑定", "target_audience": "工程师", "audience_level": "进阶"}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    argv = ["brief", "--workspace", str(workspace), "--from", str(path), "--confirm"]
+    rejected = runner.invoke(app, argv)
+    assert rejected.exit_code == 2 and "原始读者需求" in rejected.output
+    assert not (workspace / "planning/product-brief.md").exists()
+    payload["reader_request"] = "为进阶工程师写一份原文绑定教程。"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    accepted = runner.invoke(app, argv)
+    assert accepted.exit_code == 0, accepted.output
+    from knowledge_product_workflow.workflows.product_brief import read_request_contract
+    contract = read_request_contract(Workspace.open(workspace))
+    assert contract["requirements"]["reader_request"]["value"] == payload["reader_request"]
 
 
 def test_research_registers_claim_evidence_through_the_cli(tmp_path) -> None:
@@ -343,3 +357,14 @@ def test_assumption_command_writes_an_append_only_internal_ledger(tmp_path) -> N
     assert "assumption_recorded" in (workspace.root / "runs" / "events.jsonl").read_text(
         encoding="utf-8"
     )
+
+
+def test_command_index_exposes_recovery_commands_and_required_parameters() -> None:
+    result = CliRunner().invoke(app, ["commands", "--all", "--json"])
+    assert result.exit_code == 0, result.output
+    commands = {entry["command"]: entry for entry in json.loads(result.output)["commands"]}
+    for name in ("repair-pdf-preview", "record-pdf-visual-review", "check-chapter", "content-plan-schema", "classify-claim", "audit-pdf-visual"):
+        assert name in commands
+    parameters = commands["check-chapter"]["parameters"]
+    assert any("--from" in item["flags"] and item["required"] for item in parameters)
+    assert "commands --all" in CliRunner().invoke(app, ["--help"]).output

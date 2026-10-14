@@ -168,7 +168,7 @@ uv run kp submit-content-plan 1 --workspace output/ai-agent-foundations --from o
 uv run kp developmental-check 1 --workspace output/ai-agent-foundations --from output/ai-agent-foundations/runs/chapter-01-source.md
 ```
 
-宿主模型调用前后还必须通过内部 token 预算账本预约和记录 usage；默认 `lean` 模式只对样章和确定性门标记章节运行发展性编辑。输入 SHA 未变化时复用已完成结果，预算达到预警线不启动可选动作，达到上限或重试上限时停止并向用户说明范围/预算选择。
+文本token预算门已于2026-10-07按用户决定取消；无全书／章节／动作额度、预警线、预算预约或追加预算审批。写稿和审核按批准教学目标负责内容质量，实际缺项与用户审批继续阻断交付。旧文本账本保留历史，AI生图调用次数规则保持独立。
 
 模型不得填写 SHA-256、章节号、内部 Schema、资产路径或内部清单。所有输入和源稿均必须位于当前书稿工作区。图表先由作者确定其教学目的，再执行受控顺序：
 
@@ -181,7 +181,7 @@ uv run kp humanize-check 1 --workspace output/ai-agent-foundations --from output
 uv run kp submit-diagram 1 --workspace output/ai-agent-foundations --chapter-source output/ai-agent-foundations/runs/chapter-01-source.md --from output/ai-agent-foundations/runs/chapter-01-agent-layers.diagram.input.json
 ```
 
-`kp insert-diagram-reference` 从已填写图表输入中幂等写入 `![图注](assets/figures/<diagram-id>.pdf)`，同 ID 的 PNG、SVG、绝对路径、重复引用或工作区外源稿都会阻断。终稿编辑必须发生在引用写入后、图表资产渲染前；`kp submit-diagram` 不改写源稿，只预检最终源稿、当前合约、引用、节点、边、D2 和本机浏览器，随后以临时目录生成并原子替换内部 D2、SVG、读者 PDF/PNG、Spec 与清单。D2 是唯一图结构和 SVG 生成器；Chrome、Edge 或 Chromium 只在禁用后台网络与更新的无头模式下将已生成 SVG 离线转换为 PDF/PNG，以避开 D2 内置 Playwright 的运行时下载。最终书稿仍仅由 Quarto/XeLaTeX 渲染。这样编辑报告与图表清单绑定同一最终正文，避免过期循环。正文、合约或图表语义变化后需从图表模板命令重跑。
+`kp insert-diagram-reference` 从已填写图表输入中幂等写入 `![图注](assets/figures/<diagram-id>.pdf)`，同 ID 的 PNG、SVG、绝对路径、重复引用或工作区外源稿都会阻断。终稿编辑必须发生在引用写入后、图表资产渲染前；`kp submit-diagram` 不改写源稿，只预检最终源稿、当前合约、引用、节点、边、D2 和本机浏览器，随后以临时目录生成并原子替换内部 D2、SVG、读者 PDF/PNG、Spec 与清单。流程/时序/生命周期由 D2 生成；v6 的五种出版图型由固定 SVG 模板生成；Chrome、Edge 或 Chromium 只在禁用后台网络与更新的无头模式下将已生成 SVG 离线转换为 PDF/PNG，以避开 D2 内置 Playwright 的运行时下载。最终书稿仍仅由 Quarto/XeLaTeX 渲染。这样编辑报告与图表清单绑定同一最终正文，避免过期循环。正文、合约或图表语义变化后需从图表模板命令重跑。
 
 终稿编辑通过后，再生成章节合规模板：
 
@@ -207,16 +207,42 @@ uv run kp publish --workspace output/ai-agent-foundations
 
 `delivery/qa-report.json` 会记录所有可操作的质量 finding，并以 schema、报告 ID、校验阶段和输入 SHA-256 绑定当前版本；每次报告均归档在 `runs/quality-reports/`。`BOOK_WORD_RANGE_VIOLATION` 会在全书低于 `word_min` 或高于 `word_max` 时阻断；单章偏离其区间只产生 `CHAPTER_BUDGET_RANGE_WARNING`。`DUPLICATE_CONTENT_DETECTED`、`UNRESOLVED_TEMPLATE_DETECTED`、`INTERNAL_TRACE_LEAKED`、`UNDECLARED_HIGH_RISK_CLAIM`、`CHAPTER_COMPLIANCE_STALE` 和 `DIAGRAM_ASSET_UNBOUND` 分别阻止重复正文、模板残留、内部泄漏、无声明的高风险事实、过期章节证明和过期图表。报告出现 `blocked`、`invalid` 或 `stale` 时，执行 `kp status --json` 给出的 `kp validate` 或 `kp validate-delivery` 重跑；不得删除报告。读者书稿不展示来源台账、来源 ID、批次、哈希或任务路径；存在任意 blocker 时不能发布。
 
-选择 PDF 或“两者”交付格式时，需单独安装 Quarto 和 XeLaTeX。`kp doctor` 与渲染器共用同一解析器，依次检查 `KP_QUARTO_PATH`、当前进程 PATH、持久化用户 PATH、用户默认安装目录、用户/机器级 Windows 注册表、系统默认安装目录及 x86 兼容目录，并以不超过 8 秒的本地 `quarto --version` 验证候选项。因此即使 Claude Code 或 Codex 在配置 PATH 前已启动，也能识别用户级 Quarto。工作流会根据规范 `delivery/book.md` 生成 `delivery/book.qmd`，并同时写入固定的 `knowledge-book-cover.tex` 与 `knowledge-book-style.tex`。`a4-standard` 使用 A4、`extreport` 文档类、默认 12pt 或显式 14pt、左右 16mm 与上下 18mm 页边距、封面、独立目录页、微软雅黑 CJK 字体、无标题横线的页眉页码、固定段落行距和自动折行代码样式；渲染后以生成的 `book.tex` 验证实际文档类与基准字号。渲染器会显式关闭 Quarto 的自动 TeX 包安装，避免在工作流中隐式发起网络下载；缺少包时应由运维人员先完成本机 TeX 环境安装。随后渲染并校验实际 PDF 页数：
+选择 PDF 或“两者”交付格式时，需单独安装 Quarto 和 XeLaTeX。`kp doctor` 与渲染器共用同一解析器，依次检查 `KP_QUARTO_PATH`、当前进程 PATH、持久化用户 PATH、用户默认安装目录、用户/机器级 Windows 注册表、系统默认安装目录及 x86 兼容目录，并以不超过 8 秒的本地 `quarto --version` 验证候选项。因此即使 Claude Code 或 Codex 在配置 PATH 前已启动，也能识别用户级 Quarto。工作流会根据规范 `delivery/book.md` 生成 `delivery/book.qmd`，并同时写入固定的 `knowledge-book-cover.tex` 与 `knowledge-book-style.tex`。`a4-standard` 的旧版 v4/v5 使用 A4、`extreport` 文档类、默认 12pt 或显式 14pt、左右 16mm 与上下 18mm 页边距、封面、独立目录页、微软雅黑 CJK 字体、无标题横线的页眉页码、固定段落行距和自动折行代码样式；渲染后以生成的 `book.tex` 验证实际文档类与基准字号。渲染器会显式关闭 Quarto 的自动 TeX 包安装，避免在工作流中隐式发起网络下载；缺少包时应由运维人员先完成本机 TeX 环境安装。随后渲染并校验实际 PDF 页数：
 
 ```powershell
 uv run kp render-pdf --workspace output/ai-agent-foundations
+uv run kp audit-pdf-visual --workspace output/ai-agent-foundations # v6：预算授权后查看样张、记录观察
+uv run kp record-pdf-visual-observations --workspace output/ai-agent-foundations --from output/ai-agent-foundations/runs/visual-observations.json
+uv run kp record-pdf-visual-review --workspace output/ai-agent-foundations --by 用户
 uv run kp validate-delivery --workspace output/ai-agent-foundations
 uv run kp publish --workspace output/ai-agent-foundations
 ```
+
+渲染后先查看当前 PDF 及 `runs/pdf-preview/preview-manifest.json` 对应的页面图片；只有用户确认这一版本的可读性后，宿主才记录视觉复核。若 PDF 已存在而预览清单或图片缺失，`kp status --json` 会给出 `kp repair-pdf-preview --workspace <workspace>`：先执行该动作，再展示修复后的页面并记录复核。`validate-delivery` 只检查当前证据，不生成预览；PDF 或预览改变后需重新判断，不能重复校验来代替修复。
 
 仅交付 Markdown 时不需要 Quarto 或 `book.pdf`。交付 PDF 或两种格式时，必须先生成 `delivery/book.pdf`、通过质量报告、固定 PDF 源契约和可导航的 PDF 书签，`kp publish` 才会创建 `delivery/delivery-manifest.yaml`。工作区在打开时会规范为绝对路径，渲染器显式固定工作目录，只接受 `delivery/book.qmd -> delivery/book.pdf`；若出现 `delivery/output/` 或 `delivery/delivery/` 嵌套落点，查看 `runs/pdf-render.log` 并从上游重跑，不得移动文件。用户或模型设定了页数预算时，PDF 必须达到该区间下限；精确页数等价于下限和上限相同。`kp assemble` 会冻结 `delivery/book-input-manifest.json`；发布重新校验 Brief、蓝图、合约、章节合规、编辑报告、图表、书稿、QMD、模板、QA 与 PDF 的哈希。清单只记录工作区相对 POSIX 路径，例如 `delivery/book.md`；任一文件被手改或清单为旧 schema 时，运行 `kp publish` 重建，禁止手工编辑。交付给客户的只有清单中列出的 `book.md` 和/或 `book.pdf`；QMD、TeX、审稿报告和台账不对外发送。
 
 ### PDF 视觉系统 v4
 
 首次汇编还会创建 `planning/publication-profile.yaml`，并为当前渲染写入 `delivery/publication-metadata.yaml`、封面、目录、基础样式、读者组件和过滤器资产；这些文件的哈希会进入交付清单。章节源可使用 `.kp-source`、`.kp-key-takeaway`、`.kp-practice` 和 `.kp-note` fenced div，但只能使用完整围栏，不能出现裸 `{.kp-*}`。`book.md` 会降级为不含内部类名的通用 Markdown，`book.qmd` 使用合法 Div，渲染后 PDF 文本还会被检查是否泄漏内部标记。来源卡片在 PDF 中必须保留可点击外链。插图仅允许工作区 `assets/` 中的 PDF、PNG、JPG/JPEG，直接 SVG 必须先转换。完整写法与人工视觉验收见 [PDF 视觉验收](pdf-visual-acceptance.md)。
+
+## v1.3 控制面与恢复
+
+`kp commands --all --json` 公开全部命令、参数、必填字段和用途；`kp outline-schema`、`kp content-plan-schema`、`kp claim-classification-schema` 提供结构与语义示例。
+
+作者在同一章节工单/租约内运行 draft、写作、协作和提交；draft 不结束租约。样章确认后顺序完成下一章，无需创建全部空草稿。正式章节写入串行，独立只读核验和候选生成可以并行。输入只绑定实际章节依赖；确实变化时 `kp orchestration-plan --refresh --reason <原因>` 自动退休旧工单并路由。`kp cancel-orchestration-work-order` 的完整参数以命令索引为准；不要等待超时或手写完成证明。
+
+最终正文和图语义确定后，依次执行 developmental-check、humanize-check、submit-diagram、`kp check-chapter <章号> --from <源稿> --json`、submit-chapter。编辑若改变正文，两个编辑报告与对应图资产均需刷新。预检区分缺失、过期和待生成资产，并提前检查工作表的使用说明、输入、输出示例、复盘。
+
+普通文本中的不同总体百分比不求和。同总体分布用 `.kp-percentage-distribution`，声明“总体：”及表格“占比”列；校验按显示精度容差计算。作者建议/情境必须通过 classify-claim 显式绑定语义与标题，并在正文标记；未分类或分类失效默认 factual，搜索失败不自动降级。
+
+| 状态/错误 | 恢复动作 |
+| --- | --- |
+| PDF 缺失或损坏 | render-pdf |
+| PDF 存在而预览缺失/过期 | repair-pdf-preview |
+| 视觉报告缺失/过期 | audit-pdf-visual，查看当前样张并记录观察 |
+| 视觉 blocker/失败观察 | 按责任 Skill 修订章节或受控出版 token，再渲染复核 |
+| 当前视觉判断缺失 | 根 Skill 展示当前版本，收集用户判断后 record-pdf-visual-review |
+| 章节报告过期 | check-chapter 列明刷新清单，重跑当前证明 |
+
+新书 v6 默认品牌色橙色，Brief 可以声明紫色或合法 HEX；旧 v4/v5 不迁移。Windows 中文工作区的真实 Quarto 运行使用临时 ASCII 驱动器别名映射同一书稿路径，结束后释放；不把书稿移到项目外，也不隐式安装依赖。完整视觉指标和人工判断边界见 PDF 视觉验收。

@@ -54,6 +54,8 @@ def test_developmental_report_requires_the_planned_worksheet(tmp_path) -> None:
     workspace = _approved_workspace(tmp_path)
     _submit_plan(workspace)
     _source(workspace, include_worksheet=False)
+    from tests.test_structure_review_v133 import simulated_review
+    simulated_review(workspace, workspace.root / "runs" / "chapter-01-developmental-source.md")
 
     _, report = record_developmental_check(
         workspace, 1, workspace.root / "runs" / "chapter-01-developmental-source.md"
@@ -68,6 +70,8 @@ def test_developmental_report_binds_body_contract_and_content_plan(tmp_path) -> 
     _submit_plan(workspace)
     body = _source(workspace, include_worksheet=True)
     source = workspace.root / "runs" / "chapter-01-developmental-source.md"
+    from tests.test_structure_review_v133 import simulated_review
+    simulated_review(workspace, source)
     _, report = record_developmental_check(workspace, 1, source)
     contract_path, _ = require_current_chapter_contract(workspace, 1)
 

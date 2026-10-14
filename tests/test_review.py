@@ -114,6 +114,34 @@ def test_repeated_submission_reuses_the_same_inflight_batch(tmp_path: Path) -> N
     assert first.batch_id == second.batch_id
 
 
+@pytest.mark.parametrize("failures", [1, 3])
+def test_batch_directory_permission_retry_is_bounded_and_atomic(tmp_path: Path, monkeypatch, failures: int) -> None:
+    workspace = Workspace.create(tmp_path, "directory-retry")
+    _write_chapter(workspace, 1)
+    original = Path.rename
+    calls = 0
+
+    def rename(source, destination):
+        nonlocal calls
+        if source.name.startswith(".review-batch-"):
+            calls += 1
+            if calls <= failures:
+                raise PermissionError("injected transient directory lock")
+        return original(source, destination)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr("knowledge_product_workflow.review_batches.time.sleep", lambda _: None)
+    if failures == 3:
+        with pytest.raises(PermissionError, match="三次短重试"):
+            submit_review_batch(workspace, dispatcher=FakeHostTaskDispatcher())
+        assert calls == 3
+        assert not list((workspace.root / "runs" / "review-batches").iterdir())
+    else:
+        batch = submit_review_batch(workspace, dispatcher=FakeHostTaskDispatcher())
+        assert batch is not None and batch.tasks[0].receipt is not None
+        assert calls == 2
+
+
 def test_default_dispatcher_prepares_auditable_host_skill_review_batch(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "guide")
     _write_chapter(workspace, 1)

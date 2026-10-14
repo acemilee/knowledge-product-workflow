@@ -131,7 +131,7 @@ def test_explicit_case_label_is_excluded_from_high_risk_claim_detection() -> Non
     )
 
 
-def test_invalid_percentage_total_and_unbounded_resume_metrics_are_blocked() -> None:
+def test_unrelated_percentages_do_not_trigger_sum_and_unbounded_resume_metrics_are_blocked() -> None:
     markdown = """## 复习时间分配
 
 系统设计占比 54% + 项目复盘占比 30% + 模拟面试占比 20% = 100%。
@@ -143,7 +143,8 @@ def test_invalid_percentage_total_and_unbounded_resume_metrics_are_blocked() -> 
 
     codes = {finding.code for finding in scan_markdown_content(markdown, "delivery/book.md")}
 
-    assert {"PERCENTAGE_TOTAL_INVALID", "RESUME_EVIDENCE_BOUNDARY_MISSING"} <= codes
+    assert "PERCENTAGE_TOTAL_INVALID" not in codes
+    assert "RESUME_EVIDENCE_BOUNDARY_MISSING" in codes
 
 
 def test_verifiable_resume_boundary_allows_quantified_example() -> None:

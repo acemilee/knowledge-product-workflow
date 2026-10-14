@@ -1,9 +1,11 @@
 """Command-line entry point for the knowledge product workflow."""
 
 import json
+import re
 import shutil
 import sys
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated
@@ -21,12 +23,19 @@ from knowledge_product_workflow.assumption_ledger import (
 from knowledge_product_workflow.chapter_compliance import (
     ChapterSubmissionError,
     chapter_compliance_schema,
+    check_chapter,
     create_chapter_compliance_template,
     submit_chapter,
+)
+from knowledge_product_workflow.claim_classification import (
+    ClaimClassificationInput,
+    append_claim_classification,
+    classification_schema,
 )
 from knowledge_product_workflow.claims import current_claim_contract_bindings
 from knowledge_product_workflow.content_plan import (
     ContentPlanError,
+    content_plan_schema,
     create_content_plan_template,
     submit_content_plan,
 )
@@ -39,7 +48,10 @@ from knowledge_product_workflow.detail_constraints import (
 )
 from knowledge_product_workflow.developmental import (
     DevelopmentalEditError,
+    StructureReviewInput,
+    create_structure_review_template,
     record_developmental_check,
+    record_structure_review,
 )
 from knowledge_product_workflow.diagrams import (
     DiagramSubmissionError,
@@ -53,15 +65,30 @@ from knowledge_product_workflow.frontmatter import (
     render_markdown_artifact,
 )
 from knowledge_product_workflow.humanize import HumanizeReportError, record_humanize_check
+from knowledge_product_workflow.illustration_budget import (
+    freeze_image_budget,
+    load_image_budget,
+    record_image_call,
+)
+from knowledge_product_workflow.illustrations import (
+    AssetStyleInput,
+    preflight_illustration,
+    record_asset_style,
+    style_resources,
+)
 from knowledge_product_workflow.localization import ChineseTyperCommand, ChineseTyperGroup
 from knowledge_product_workflow.models import ArtifactStatus
-from knowledge_product_workflow.pdf_preview import resolve_pdftoppm
+from knowledge_product_workflow.pdf_preview import render_pdf_preview_set, resolve_pdftoppm
 from knowledge_product_workflow.pdf_visual import record_manual_pdf_visual_review
 from knowledge_product_workflow.presentation import (
     PresentationOverrides,
     PublicationUpdateInput,
+    _brand_palette,
     apply_publication_update,
+    create_publication_design_preview,
+    load_or_create_publication_profile,
     preview_publication_update,
+    validate_cover_contract,
 )
 from knowledge_product_workflow.publishing import (
     assemble_book,
@@ -69,7 +96,7 @@ from knowledge_product_workflow.publishing import (
     refresh_publication_delivery,
     render_pdf,
 )
-from knowledge_product_workflow.quality import QualityReport
+from knowledge_product_workflow.quality import QualityReport, Severity
 from knowledge_product_workflow.quality_exceptions import (
     ControlledExceptionRequest,
     controlled_exception_schema,
@@ -96,6 +123,7 @@ from knowledge_product_workflow.runtime import (
     authorize_workflow_transition,
     cancel_orchestration_work_order,
     capture_orchestration_action,
+    capture_orchestration_update,
     complete_orchestration_action,
     complete_orchestration_work_order,
     create_orchestration_work_order,
@@ -106,23 +134,18 @@ from knowledge_product_workflow.runtime import (
     pause_run_intent,
     preflight_independent_review,
     record_research_impact,
+    refresh_orchestration_after_controlled_update,
     require_delivery_orchestration_ready,
     route_workflow,
     start_run_intent,
     supersede_orchestration_work_orders,
 )
-from knowledge_product_workflow.source_ledger import SourceLedgerEntry, append_source_entry
-from knowledge_product_workflow.state_machine import transition
-from knowledge_product_workflow.token_budget import (
-    TokenBudgetActionRequest,
-    TokenBudgetExceededError,
-    TokenMode,
-    complete_model_action,
-    fail_model_action,
-    freeze_token_budget,
-    load_token_budget,
-    preflight_model_action,
+from knowledge_product_workflow.source_ledger import (
+    SourceLedgerEntry,
+    append_source_entry,
+    validate_claims,
 )
+from knowledge_product_workflow.state_machine import transition
 from knowledge_product_workflow.user_decisions import (
     UserDecisionTarget,
     UserResponseDecision,
@@ -134,6 +157,12 @@ from knowledge_product_workflow.user_decisions import (
 )
 from knowledge_product_workflow.user_decisions import (
     record_user_decision as persist_user_decision,
+)
+from knowledge_product_workflow.visual_audit import (
+    VisualObservation,
+    audit_path,
+    audit_pdf_visual,
+    record_visual_observations,
 )
 from knowledge_product_workflow.workflows.authoring import (
     amend_chapter_draft,
@@ -155,22 +184,38 @@ from knowledge_product_workflow.workflows.curriculum import (
 )
 from knowledge_product_workflow.workflows.product_brief import (
     BriefRevisionCandidate,
+    BriefSemanticFields,
     approve_brief_amendment,
     brief_contract_fingerprints,
     brief_target_audience,
     brief_topic,
     create_brief_amendment_preview,
     create_product_brief,
+    parse_brief_semantics,
     parse_detail_constraints,
     parse_presentation_overrides,
     read_request_contract,
     render_product_brief_body,
     replace_unapproved_brief_draft,
     request_contract_path,
+    require_original_reader_request,
     write_request_contract,
 )
 from knowledge_product_workflow.workflows.validation import run_delivery_validation, run_validation
 from knowledge_product_workflow.workspace import Workspace
+
+
+def _illustration_authorization(workspace: Workspace, chapter_number: int, source: Path) -> None:
+    """Conditional child work stays inside author lease; display repairs preserve frozen text."""
+    submitted = workspace.root / "chapters" / f"chapter-{chapter_number:02d}.md"
+    if submitted.is_file():
+        metadata, body = parse_markdown_artifact(submitted.read_text(encoding="utf-8"))
+        if metadata.status not in {ArtifactStatus.DRAFT, ArtifactStatus.IN_PRODUCTION}:
+            from knowledge_product_workflow.diagrams import _reader_body
+            if body.strip() != _reader_body(source).strip():
+                raise ValueError("已提交章节的正文改变须先amend-chapter；纯展示修复不能改正文")
+            return
+    capture_orchestration_action(workspace, "submit-chapter", chapter_number=chapter_number)
 
 
 def _configure_piped_text_streams() -> None:
@@ -194,7 +239,7 @@ _configure_piped_text_streams()
 
 
 app = typer.Typer(
-    help="知识产品工作流",
+    help="知识产品工作流。完整命令索引：kp commands --all。",
     cls=ChineseTyperGroup,
     rich_markup_mode=None,
     options_metavar="[选项]",
@@ -243,6 +288,7 @@ _STAGE_LABELS = {
     "quality_blocked": "全书质量门未通过",
     "assembly_pending": "等待汇编书稿",
     "pdf_render_pending": "等待渲染 PDF",
+    "pdf_preview_repair_pending": "等待修复 PDF 页面预览",
     "delivery_validation_pending": "等待交付质量校验",
     "delivery_quality_report_invalid": "交付质量报告无效",
     "delivery_quality_report_stale": "交付质量报告已过期",
@@ -263,13 +309,135 @@ def main() -> None:
     """运行文件驱动的知识产品工作流。"""
 
 
+@zh_command("identity", user_visible=True)
+def identity_command(
+    json_output: Annotated[bool, typer.Option("--json", help="输出运行身份JSON")] = False,
+    host: Annotated[str | None, typer.Option(help="宿主自报名称，不视为verified")] = None,
+    model: Annotated[str | None, typer.Option(help="宿主自报模型，不视为verified")] = None,
+) -> None:
+    """只读核对实际源码、安装元数据、规范与渲染资源；不自动安装。"""
+    from knowledge_product_workflow.identity import runtime_identity
+    identity = runtime_identity(host, model)
+    if json_output:
+        typer.echo(json.dumps(identity, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(f"实际源码：{identity['source_version']}；安装元数据：{identity['distribution_version']}；一致：{identity['version_consistent']}")
+        typer.echo(f"入口：{identity['effective_source']}；宿主/模型无回执时保留unknown。")
+
+
+@zh_command("commands", user_visible=True)
+def commands_index(
+    all_commands: Annotated[bool, typer.Option("--all", help="包含受阶段授权约束的隐藏命令")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON")] = False,
+    command_name: Annotated[str | None, typer.Option("--command", help="只查看一个精确命令及其参数，不授予执行权限")] = None,
+) -> None:
+    """查看命令用途、参数与隐藏状态；查看不会授予执行权限。"""
+    command_group = typer.main.get_command(app)
+    entries: list[dict[str, object]] = []
+    for name, command in sorted(command_group.commands.items()):
+        if command_name is not None and name != command_name:
+            continue
+        if command.hidden and not all_commands:
+            continue
+        argv = ["kp", name]
+        for parameter in command.params:
+            if parameter.required:
+                flags = list(getattr(parameter, "opts", []))
+                if flags and flags[0].startswith("-"):
+                    argv.append(flags[0])
+                argv.append(f"<{parameter.name}>")
+        entries.append({
+            "command": name,
+            "purpose": (command.help or "").strip(),
+            "argv": argv,
+            "required_role": _command_role(name),
+            "input_templates": _command_input_templates(name),
+                "hidden": bool(command.hidden),
+                "output_format": "yaml_default_json_optional" if name in {"outline-schema", "controlled-exception-schema"}
+                                 else "json" if name.endswith("-schema") else "see_parameters",
+            "parameters": [
+                {
+                    "name": parameter.name,
+                    "flags": list(getattr(parameter, "opts", [])),
+                    "required": bool(parameter.required),
+                    "choices": list(getattr(parameter.type, "choices", [])),
+                    "help": getattr(parameter, "help", None),
+                }
+                for parameter in command.params
+            ],
+        })
+    if command_name is not None and not entries:
+        typer.echo(f"未找到可见命令：{command_name}；受控命令需加 --all 查看。", err=True)
+        raise typer.Exit(code=2)
+    if json_output:
+        typer.echo(json.dumps({"commands": entries}, ensure_ascii=False, indent=2))
+        return
+    for entry in entries:
+        label = " [受控]" if entry["hidden"] else ""
+        typer.echo(f"kp {entry['command']}{label} — {entry['purpose']}")
+
+
+def _command_role(name: str) -> str:
+    if "observation" in name or name in {"audit-pdf-visual", "record-pdf-visual-review"}:
+        return "kp-visual-reviewer"
+    if "diagram" in name or "illustration" in name:
+        return "kp-diagram-designer"
+    if "developmental" in name:
+        return "kp-developmental-editor"
+    if "content-plan" in name or "example" in name or "chapter" in name or name == "draft":
+        return "kp-chapter-writer"
+    if "outline" in name or name in {"compile-contracts", "contract"}:
+        return "kp-curriculum-architect"
+    if "brief" in name:
+        return "kp-product-strategist"
+    return "kp-create"
+
+
+def _command_input_templates(name: str) -> list[dict[str, str]]:
+    templates = {
+        "submit-content-plan": ("content-plan-template", "runs/templates/chapter-<章节号>-content-plan.template.yaml"),
+        "record-developmental-review": ("developmental-review-template", "stdout JSON；保存到当前工作区并填写 observations"),
+        "record-pdf-visual-observations": ("pdf-observation-template", "stdout JSON 的 observations 数组；实际看图后填写"),
+        "submit-outline": ("outline", "planning/curriculum-blueprint.template.yaml"),
+        "submit-diagram": ("diagram-template", "runs/templates/chapter-<章节号>-<图ID>.diagram.template.json"),
+        "submit-chapter": ("chapter-compliance-template", "runs/templates/chapter-<章节号>-compliance.template.json"),
+    }
+    if name not in templates:
+        return []
+    command, path = templates[name]
+    schemas = {"submit-content-plan": "content-plan-schema", "record-developmental-review": "developmental-review-schema",
+               "record-pdf-visual-observations": "pdf-observation-schema", "submit-outline": "outline-schema",
+               "submit-diagram": "diagram-schema", "submit-chapter": "chapter-compliance-schema"}
+    return [{"command": command, "path": path, "schema_command": schemas[name]}]
+
+
+@zh_command("run-snapshot")
+def run_snapshot_command(workspace: WorkspacePath,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    verify_current: Annotated[bool, typer.Option("--verify-current", help="只读检查已保存快照是否仍当前")] = False,
+    host: Annotated[str | None, typer.Option(help="宿主声明，非自动验证")] = None,
+    model: Annotated[str | None, typer.Option(help="模型声明，未知可省略")] = None) -> None:
+    """从当前控制面生成后台JSON/中文运行报告；过时报告不冒当前。"""
+    from knowledge_product_workflow.run_snapshot import current_run_snapshot, write_run_snapshot
+    opened = _open_workspace(workspace)
+    if verify_current:
+        snapshot = current_run_snapshot(opened)
+        if snapshot is None:
+            typer.echo("运行快照缺失或已过期；读取当前状态后重新生成。", err=True)
+            raise typer.Exit(1)
+    else:
+        path, _ = write_run_snapshot(opened, host=host, model=model)
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    typer.echo(json.dumps(snapshot, ensure_ascii=False, indent=2) if json_output else "已生成/核对当前运行快照：runs/run-snapshot.json 与 run-snapshot.md；最终本人批准单列。")
+
+
 @zh_command(user_visible=True)
 def init(
     book_id: Annotated[str, typer.Argument(help="书稿唯一标识")],
     root: Annotated[Path, typer.Option(help="书稿工作区根目录")] = Path("output"),
 ) -> None:
     """初始化隔离的书稿工作区。"""
-    workspace = Workspace.create(root, book_id)
+    workspace = Workspace.create(root, book_id, current_policy=True)
     checks = _doctor_checks()
     workspace.append_event(
         "environment_diagnosed",
@@ -334,7 +502,7 @@ def _doctor_checks() -> dict[str, dict[str, bool | str | None | list[str]]]:
     quarto = resolve_quarto()
     d2 = resolve_d2()
     diagram_browser = resolve_diagram_browser()
-    return {
+    checks = {
         "kp": {"available": shutil.which("kp") is not None, "path": shutil.which("kp")},
         "quarto": {
             "available": quarto.available,
@@ -370,6 +538,9 @@ def _doctor_checks() -> dict[str, dict[str, bool | str | None | list[str]]]:
             "path": str(resolve_pdftoppm()) if resolve_pdftoppm() else None,
         },
     }
+    from knowledge_product_workflow.pdf_fonts import probe_preferred_fonts
+    checks.update({key: {**value, "path": None} for key, value in probe_preferred_fonts(Path.cwd()).items()})
+    return checks
 
 
 def _build_constraints(
@@ -406,19 +577,22 @@ def _build_presentation_overrides(
     publication_date: str | date | None,
     publisher_label: str | None,
     copyright_line: str | None,
+    brand_color_intent: str | None,
 ) -> PresentationOverrides | None:
     """Normalize optional public publication values without making them Brief requirements."""
+    _brand_palette(brand_color_intent or "橙色基调")
     overrides = PresentationOverrides(
         subtitle=subtitle,
         edition=edition,
         publication_date=publication_date,
         publisher_label=publisher_label,
         copyright_line=copyright_line,
+        brand_color_intent=brand_color_intent or "橙色基调",
     )
     return overrides if overrides.has_values() else None
 
 
-class StructuredBriefInput(BaseModel):
+class StructuredBriefInput(BriefSemanticFields):
     """Strict non-interactive contract; no positional stdin protocol is accepted."""
 
     model_config = ConfigDict(extra="forbid")
@@ -437,7 +611,9 @@ class StructuredBriefInput(BaseModel):
     publication_date: date | None = None
     publisher_label: str | None = None
     copyright_line: str | None = None
+    brand_color_intent: str | None = None
     requirement_sources: dict[str, str] = Field(default_factory=dict)
+    presentation: PresentationOverrides | None = None
 
     @field_validator("target_audience")
     @classmethod
@@ -448,7 +624,7 @@ class StructuredBriefInput(BaseModel):
         return cleaned
 
 
-class BriefAmendmentInput(BaseModel):
+class BriefAmendmentInput(BriefSemanticFields):
     """A partial, explicit Brief revision request supplied by the host."""
 
     model_config = ConfigDict(extra="forbid")
@@ -467,6 +643,7 @@ class BriefAmendmentInput(BaseModel):
     publication_date: date | None = None
     publisher_label: str | None = None
     copyright_line: str | None = None
+    brand_color_intent: str | None = None
     change_reason: str | None = None
 
     @model_validator(mode="after")
@@ -545,6 +722,10 @@ def _render_constraints_summary(target_audience: str, constraints: DetailConstra
         page_value = f"至少 {page_budget.minimum} 页"
     elif page_budget.mode.value == "exact":
         page_value = f"{page_budget.target} 页"
+    elif page_budget.mode.value == "preferred":
+        page_value = f"首选 {page_budget.preferred_minimum}-{page_budget.preferred_maximum} 页"
+        if page_budget.maximum is not None:
+            page_value += f"；硬上限 {page_budget.maximum} 页"
     else:
         page_value = f"{page_budget.minimum}-{page_budget.maximum} 页"
     if page_budget is not None and page_budget.scope.value == "body_only":
@@ -664,18 +845,6 @@ def _load_publication_update(path: Path) -> PublicationUpdateInput:
         raise ValueError(f"出版信息更新字段无效：{error}") from error
 
 
-def _load_token_budget_action_request(path: Path) -> TokenBudgetActionRequest:
-    try:
-        source = path.read_text(encoding="utf-8")
-        raw = json.loads(source) if path.suffix.lower() == ".json" else yaml.safe_load(source)
-    except (OSError, json.JSONDecodeError, yaml.YAMLError) as error:
-        raise ValueError(f"无法读取 token 模型动作输入文件：{error}") from error
-    if not isinstance(raw, dict):
-        raise TypeError("token 模型动作输入文件必须是 JSON 或 YAML 对象。")
-    try:
-        return TokenBudgetActionRequest.model_validate(raw)
-    except ValidationError as error:
-        raise ValueError(f"token 模型动作输入字段无效：{error}") from error
 
 
 def _load_controlled_exception_submission(path: Path) -> ControlledExceptionSubmissionInput:
@@ -727,6 +896,11 @@ def _page_constraint_argument(constraints: DetailConstraints) -> int | str | Non
         return prefix + f"至少{constraint.minimum}页"
     if constraint.mode.value == "exact":
         return prefix + str(constraint.target)
+    if constraint.mode.value == "preferred":
+        value = prefix + f"目标{constraint.preferred_minimum}-{constraint.preferred_maximum}页"
+        if constraint.maximum is not None:
+            value += f"，最多{constraint.maximum}页"
+        return value
     return prefix + f"{constraint.minimum}-{constraint.maximum}"
 
 
@@ -760,13 +934,14 @@ def _build_brief_amendment_candidate(workspace: Workspace, amendment: BriefAmend
         "publication_date": None,
         "publisher_label": None,
         "copyright_line": None,
+        "brand_color_intent": None,
     }
     if current_presentation is not None:
         presentation_values.update(current_presentation.model_dump(mode="python"))
-    for field in ("subtitle", "edition", "publication_date", "publisher_label", "copyright_line"):
+    for field in ("subtitle", "edition", "publication_date", "publisher_label", "copyright_line", "brand_color_intent"):
         if field in fields:
             presentation_values[field] = getattr(amendment, field)
-    presentation = _build_presentation_overrides(**presentation_values)
+    presentation = PresentationOverrides.model_validate(presentation_values)
     topic = amendment.topic.strip() if amendment.topic is not None else brief_topic(body)
     target_audience = (
         amendment.target_audience.strip()
@@ -776,7 +951,13 @@ def _build_brief_amendment_candidate(workspace: Workspace, amendment: BriefAmend
     if not topic or not target_audience:
         raise ValueError("Brief 修订后的主题和目标受众不能为空")
     current_fingerprints = brief_contract_fingerprints(body)
-    revised_body = render_product_brief_body(topic, target_audience, revised_constraints, presentation)
+    semantic_values = parse_brief_semantics(body).model_dump()
+    for field in BriefSemanticFields.model_fields:
+        if field in fields:
+            semantic_values[field] = getattr(amendment, field)
+    revised_body = render_product_brief_body(
+        topic, target_audience, revised_constraints, presentation, BriefSemanticFields(**semantic_values)
+    )
     revised_fingerprints = brief_contract_fingerprints(revised_body)
     changed_fields = sorted(field for field in fields if field != "change_reason")
     revision_kind = (
@@ -795,6 +976,7 @@ def _build_brief_amendment_candidate(workspace: Workspace, amendment: BriefAmend
         revision_kind=revision_kind,
         changed_fields=changed_fields,
         change_reason=amendment.change_reason,
+        **semantic_values,
     )
 
 
@@ -805,17 +987,26 @@ def _write_brief_preview(
     constraints: DetailConstraints,
     presentation: PresentationOverrides | None,
     requirement_sources: dict[str, str],
+    semantics: BriefSemanticFields | None = None,
 ) -> Path:
+    require_original_reader_request(workspace, semantics)
+    update_snapshot = capture_orchestration_update(workspace)
     output = workspace.root / "runs" / "brief-preview.json"
+    design_preview = create_publication_design_preview(workspace, presentation.brand_color_intent or "橙色基调" if presentation else "橙色基调")
     output.write_text(
         json.dumps(
             {
                 "topic": topic,
+                "semantics": semantics.model_dump() if semantics else None,
                 "target_audience": target_audience,
                 "detail_constraints": constraints.model_dump(mode="json"),
                 "presentation": presentation.model_dump(mode="json", exclude_none=True)
                 if presentation
                 else None,
+                "brand_palette": _brand_palette(presentation.brand_color_intent or "橙色基调").model_dump()
+                if presentation else _brand_palette("橙色基调").model_dump(),
+                "design_sample": "设计示意：目录编号、章节标题、提示框、表头和插图将使用同一品牌色；此时尚非真实成书预览。",
+                "design_preview_path": design_preview.relative_to(workspace.root).as_posix(),
                 "requirement_sources": requirement_sources,
             },
             ensure_ascii=True,
@@ -832,7 +1023,13 @@ def _write_brief_preview(
             "artifact": str(output.relative_to(workspace.root)).replace("\\", "/"),
         },
     )
-    write_request_contract(workspace, topic, target_audience, constraints, requirement_sources)
+    write_request_contract(
+        workspace, topic, target_audience, constraints, requirement_sources,
+        brand_color_intent=presentation.brand_color_intent if presentation else None,
+        semantics=semantics,
+    )
+    refresh_orchestration_after_controlled_update(workspace, 'brief-preview', snapshot=update_snapshot,
+        output_paths=[output, design_preview, workspace.root / 'runs/request-contract.yaml'])
     return output
 
 
@@ -841,6 +1038,7 @@ def _brief_requirement_sources(
     constraints: DetailConstraints,
     *,
     interactive: bool,
+    brand_color_explicit: bool = False,
 ) -> dict[str, str]:
     """Classify persisted values so defaults cannot masquerade as user requirements."""
     fields = payload.model_fields_set if payload is not None else set()
@@ -853,17 +1051,24 @@ def _brief_requirement_sources(
         "audience_level",
         "delivery_format",
         "review_policy",
+        "brand_color_intent",
+        *BriefSemanticFields.model_fields,
     ):
         if payload is not None and field in payload.requirement_sources:
             sources[field] = payload.requirement_sources[field]
-        elif field in fields or (interactive and field == "audience_level"):
+        elif (field in fields or (interactive and field == "audience_level")
+              or (field == "brand_color_intent" and (brand_color_explicit or
+                  (payload is not None and payload.presentation is not None and payload.presentation.brand_color_intent is not None)))):
             sources[field] = "user_explicit"
-        elif field in {"delivery_format", "language", "layout_profile", "review_policy"}:
+        elif field in {"delivery_format", "language", "layout_profile", "review_policy", "brand_color_intent"}:
             sources[field] = "default"
         else:
             sources[field] = "model_recommendation"
     if constraints.delivery_format.value == "both" and sources["delivery_format"] == "default":
         sources["delivery_format"] = "model_recommendation"
+    if (payload is not None and payload.reader_request
+            and not re.search(r'橙|紫|品牌色|主色|#[0-9A-Fa-f]{6}', payload.reader_request)):
+        sources['brand_color_intent'] = 'default'
     return sources
 
 
@@ -904,10 +1109,10 @@ def _approval_identity_for_action(workspace: Workspace, override: str | None) ->
     return workspace.approval_identity() or workspace.configure_approval_identity("用户")
 
 
-def _capture_orchestration_action_or_exit(workspace: Workspace, action: str) -> str | None:
+def _capture_orchestration_action_or_exit(workspace: Workspace, action: str, *, chapter_number: int | None = None) -> str | None:
     """Keep controller handoff capture internal to one state-changing CLI command."""
     try:
-        return capture_orchestration_action(workspace, action)
+        return capture_orchestration_action(workspace, action, chapter_number=chapter_number)
     except OrchestrationWorkOrderError as error:
         typer.echo(f"当前操作无法继续：{error}", err=True)
         raise typer.Exit(code=1) from error
@@ -942,6 +1147,7 @@ def brief(
     publication_date: Annotated[str | None, typer.Option(help="发布日期，YYYY-MM-DD（可选）")] = None,
     publisher_label: Annotated[str | None, typer.Option(help="发布者标签（可选）")] = None,
     copyright_line: Annotated[str | None, typer.Option(help="版权行（可选）")] = None,
+    brand_color_intent: Annotated[str | None, typer.Option("--brand-color", help="品牌色：橙色基调、紫色基调或 #RRGGBB；默认橙色")]= None,
     from_file: Annotated[Path | None, typer.Option("--from", help="结构化 Brief JSON 或 YAML 输入文件")] = None,
     confirm: Annotated[
         bool, typer.Option(help="确认使用已预览的结构化 Brief 创建工件", show_default=False)
@@ -967,7 +1173,10 @@ def brief(
                 publication_date=publication_date,
                 publisher_label=publisher_label,
                 copyright_line=copyright_line,
+                brand_color_intent=brand_color_intent,
             )
+            if presentation is not None:
+                validate_cover_contract(presentation, str(topic))
         except (TypeError, ValidationError, ValueError) as error:
             if isinstance(error, ValidationError) and "audience_level" in str(error):
                 typer.echo(
@@ -1001,6 +1210,9 @@ def brief(
                 publication_date = payload.publication_date
                 publisher_label = payload.publisher_label
                 copyright_line = payload.copyright_line
+                brand_color_intent = payload.brand_color_intent
+                if payload.presentation is not None:
+                    presentation = payload.presentation
             if not topic:
                 raise ValueError("结构化 Brief 必须通过命令主题或输入文件 topic 提供主题。")
             if not target_audience or not target_audience.strip():
@@ -1016,13 +1228,23 @@ def brief(
                 delivery_format=delivery_format,
                 review_policy=review_policy,
             )
-            presentation = _build_presentation_overrides(
+            flat_presentation = _build_presentation_overrides(
                 subtitle=subtitle,
                 edition=edition,
                 publication_date=publication_date,
                 publisher_label=publisher_label,
                 copyright_line=copyright_line,
+                brand_color_intent=brand_color_intent,
             )
+            if presentation is not None:
+                values = flat_presentation.model_dump(exclude_none=True) if flat_presentation else {}
+                values.update(presentation.model_dump(exclude_unset=True))
+                presentation = PresentationOverrides.model_validate(values)
+            else:
+                presentation = flat_presentation
+            if presentation is not None:
+                validate_cover_contract(presentation, str(topic))
+            require_original_reader_request(opened_workspace, structured_payload)
         except (TypeError, ValidationError, ValueError) as error:
             if isinstance(error, ValidationError) and "audience_level" in str(error):
                 typer.echo(
@@ -1035,7 +1257,7 @@ def brief(
             raise typer.Exit(code=2) from error
         _ensure_approval_identity(opened_workspace, False)
         requirement_sources = _brief_requirement_sources(
-            structured_payload, constraints, interactive=False
+            structured_payload, constraints, interactive=False, brand_color_explicit=brand_color_intent is not None
         )
         preview = _write_brief_preview(
             opened_workspace,
@@ -1044,6 +1266,10 @@ def brief(
             constraints,
             presentation,
             requirement_sources,
+            (
+                BriefSemanticFields(**{key: getattr(structured_payload, key) for key in BriefSemanticFields.model_fields})
+                if structured_payload else None
+            ),
         )
         typer.echo(_render_constraints_summary(target_audience.strip(), constraints))
         if not confirm:
@@ -1064,17 +1290,25 @@ def brief(
             constraints,
             target_audience=target_audience.strip(),
             presentation=presentation,
+            semantics=(BriefSemanticFields(**{key: getattr(structured_payload, key) for key in BriefSemanticFields.model_fields})
+                       if structured_payload else None),
         )
     except (FileExistsError, ValueError) as error:
         fail_orchestration_action(opened_workspace, "brief", str(error))
         typer.echo(f"无法更新产品 Brief：{error}", err=True)
         raise typer.Exit(code=1) from error
+    load_or_create_publication_profile(
+        opened_workspace, language=constraints.language, overrides=presentation
+    )
     write_request_contract(
         opened_workspace,
         str(topic),
         target_audience.strip(),
         constraints,
-        _brief_requirement_sources(structured_payload, constraints, interactive=interactive),
+        _brief_requirement_sources(structured_payload, constraints, interactive=interactive, brand_color_explicit=brand_color_intent is not None),
+        brand_color_intent=presentation.brand_color_intent if presentation else None,
+        semantics=(BriefSemanticFields(**{key: getattr(structured_payload, key) for key in BriefSemanticFields.model_fields})
+                   if structured_payload else None),
     )
     session_path = _brief_session_path(opened_workspace)
     if session_path.exists():
@@ -1145,17 +1379,27 @@ def orchestration_plan(
         bool,
         typer.Option("--adopt-legacy", help="仅在用户确认后将旧工作区纳入 v1.1 编排控制"),
     ] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="检查失效工单并受控重路由")] = False,
+    reason: Annotated[str | None, typer.Option("--reason", help="重路由原因；与 --refresh 配合使用")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON")] = False,
 ) -> None:
     """为当前宏阶段创建或复用版本绑定的 v1.1 编排工单。"""
     opened_workspace = _open_workspace(workspace)
+    if refresh and not (reason or "").strip():
+        typer.echo("无法刷新编排工单：--refresh 必须同时填写 --reason。", err=True)
+        raise typer.Exit(code=1)
     try:
-        output = create_orchestration_work_order(opened_workspace, adopt_legacy=adopt_legacy)
+        output = create_orchestration_work_order(
+            opened_workspace,
+            adopt_legacy=adopt_legacy,
+            refresh_reason=reason.strip() if refresh and reason else None,
+        )
     except OrchestrationWorkOrderError as error:
         typer.echo(f"无法创建编排工单：{error}", err=True)
         raise typer.Exit(code=1) from error
     payload = {
         "work_order_path": str(output.relative_to(opened_workspace.root)).replace("\\", "/"),
+        "refresh_reason": reason.strip() if refresh and reason else None,
         "status": inspect_workflow(opened_workspace).model_dump(mode="json"),
     }
     if json_output:
@@ -1207,16 +1451,106 @@ def pause_run_intent_command(
 def record_pdf_visual_review_command(
     workspace: WorkspacePath,
     by: EditorIdentity = None,
+    confirm_style_anchor: Annotated[bool, typer.Option(help="仅在用户明确认可已展示的候选母版后使用")] = False,
+    confirm_manual_coverage: Annotated[bool, typer.Option(help="实际用户已直接核对当前全部核验页；不可覆盖失败或blocker")] = False,
+    confirm_content: Annotated[bool, typer.Option(help="实际用户同时确认当前内容；旧视觉回执不自动扩展")] = False,
+    user_response: Annotated[str | None, typer.Option("--response", help="本次真实用户确认原话，不用测试审批代填")] = None,
 ) -> None:
     """内部：将人工图表视觉复核绑定到当前 PDF 版本。"""
     opened_workspace = _open_workspace(workspace)
+    action_work_order_id = (
+        _capture_orchestration_action_or_exit(opened_workspace, "record-pdf-visual-review")
+        if inspect_workflow(opened_workspace).stage == "pdf_manual_review_pending" else None
+    )
     identity = _approval_identity_for_action(opened_workspace, by)
     try:
-        output = record_manual_pdf_visual_review(opened_workspace, identity)
+        output = record_manual_pdf_visual_review(opened_workspace, identity,confirm_style_anchor=confirm_style_anchor,
+            confirm_manual_coverage=confirm_manual_coverage, confirm_content=confirm_content, user_response=user_response)
     except (FileNotFoundError, ValueError) as error:
         typer.echo(f"无法记录 PDF 视觉复核：{error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"已记录当前 PDF 的视觉复核：{output}")
+    if action_work_order_id is not None:
+        complete_orchestration_action(
+            opened_workspace, "record-pdf-visual-review", proof="用户已确认当前 PDF 的人工视觉复核",
+            output_paths=[output], work_order_id=action_work_order_id,
+        )
+
+
+@zh_command("audit-pdf-visual")
+def audit_pdf_visual_command(workspace: WorkspacePath,
+    sample_limit: Annotated[int | None, typer.Option("--sample-limit", min=1, help="初查清晰页预算；不传则覆盖当前PDF全页，必选异常页不截断")] = None,
+) -> None:
+    """量测当前 v6 PDF 全页，默认全页清晰核验；显式页预算供初查。"""
+    opened_workspace = _open_workspace(workspace)
+    try:
+        authorize_command(opened_workspace, "audit-pdf-visual")
+        order_id = _capture_orchestration_action_or_exit(opened_workspace, "audit-pdf-visual")
+        from pypdf import PdfReader
+        limit = sample_limit if sample_limit is not None else len(PdfReader(opened_workspace.root / "delivery/book.pdf").pages)
+        report = audit_pdf_visual(opened_workspace, sample_limit=limit)
+    except (OSError, RuntimeError, ValueError) as error:
+        typer.echo(f"无法完成逐页视觉量测：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    complete_orchestration_action(
+        opened_workspace, "audit-pdf-visual", proof="已完成全页量测及清晰页图",
+        output_paths=[audit_path(opened_workspace)], work_order_id=order_id,
+    )
+    typer.echo(f"已量测 {report.page_count} 页，清晰抽样页：{report.sampled_pages}；观察项待看图或人工复核。")
+
+
+@zh_command("pdf-observation-schema")
+def pdf_observation_schema_command() -> None:
+    """只读输出视觉观察 JSON 数组 Schema；记录不证明实际看过页面。"""
+    typer.echo(json.dumps({"type": "array", "minItems": 1,
+                          "items": VisualObservation.model_json_schema()}, ensure_ascii=False, indent=2))
+
+
+@zh_command("pdf-observation-template")
+def pdf_observation_template_command(workspace: WorkspacePath) -> None:
+    """只读列出当前清晰页图和待填观察，不生成通过证明。"""
+    from hashlib import sha256
+
+    from knowledge_product_workflow.visual_audit import current_visual_audit
+    opened = _open_workspace(workspace)
+    report = current_visual_audit(opened)
+    if report is None:
+        typer.echo("当前视觉量测缺失或已过期；请先运行 kp audit-pdf-visual。", err=True)
+        raise typer.Exit(1)
+    pages = []
+    for metric in report.pages:
+        if metric.page_number not in report.sampled_pages or not metric.high_resolution_image:
+            continue
+        path = (opened.root / metric.high_resolution_image).resolve()
+        if (path.is_relative_to(opened.root.resolve()) and path.is_file()
+                and sha256(path.read_bytes()).hexdigest() == metric.high_resolution_image_sha256):
+            pages.append({"page_number": metric.page_number, "image": metric.high_resolution_image})
+    typer.echo(json.dumps({
+        "observable_pages": [p["page_number"] for p in pages], "pages": pages,
+        "observations": [{"page_number": p["page_number"], "assessment": "uncertain", "note": "",
+                          "responsible_skill": "kp-visual-reviewer"} for p in pages],
+        "note": "未完成模板。实际读取对应清晰页图后填写具体依据，再仅提交 observations 数组；未看过的页不得 passed。",
+    }, ensure_ascii=False, indent=2))
+
+
+@zh_command("record-pdf-visual-observations")
+def record_pdf_visual_observations_command(
+    workspace: WorkspacePath,
+    input_path: Annotated[Path, typer.Option("--from", help="已查看页面的观察记录 JSON 数组")],
+) -> None:
+    """记录视觉 Skill 的页码与具体观察；不能替代人工出版确认。"""
+    opened_workspace = _open_workspace(workspace)
+    try:
+        path = _workspace_input_path(opened_workspace, input_path, label="视觉观察输入")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            raise TypeError("视觉观察输入须为 JSON 数组")
+        report = record_visual_observations(opened_workspace, [VisualObservation.model_validate(item) for item in raw])
+        create_orchestration_work_order(opened_workspace)
+    except (OSError, ValueError, TypeError) as error:
+        typer.echo(f"无法记录视觉观察：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(f"已绑定 {len(report.observations)} 条视觉观察；仍需用户确认当前 PDF。")
 
 
 @zh_command("complete-orchestration-work-order")
@@ -1259,11 +1593,23 @@ def record_research_impact_command(
     summary: Annotated[str, typer.Option(help="面向编排器的简短研究结论，不进入读者正文")],
 ) -> None:
     """记录研究结果对课程范围的影响，并给根编排器提供确定性恢复路径。"""
+    opened_workspace = _open_workspace(workspace)
     try:
-        output = record_research_impact(_open_workspace(workspace), ResearchImpact(impact), summary)
+        normalized_impact = ResearchImpact(impact)
+        action_work_order_id = _capture_orchestration_action_or_exit(
+            opened_workspace, "record-research-impact"
+        )
+        output = record_research_impact(opened_workspace, normalized_impact, summary)
     except (ValueError, OSError) as error:
         typer.echo(f"无法记录研究影响：{error}", err=True)
         raise typer.Exit(code=1) from error
+    complete_orchestration_action(
+        opened_workspace,
+        "record-research-impact",
+        proof=f"已登记真实研究影响决策：{normalized_impact.value}",
+        output_paths=[output],
+        work_order_id=action_work_order_id,
+    )
     typer.echo(f"已记录研究影响决策：{output}")
 
 
@@ -1295,15 +1641,23 @@ def doctor(
         "quarto": "Quarto",
         "xelatex": "XeLaTeX",
         "microsoft_yahei": "微软雅黑字体",
+        "pingfang_sc": "默认中文正文：PingFang SC",
+        "pingfang_sc_semibold": "默认中文标题/强调：PingFang SC Semibold",
+        "inter": "默认英文正文：Inter",
+        "jetbrains_mono": "默认代码/等宽标识：JetBrains Mono",
         "d2": "D2 图表工具",
         "diagram_browser": "图表离线转换浏览器",
         "pdftoppm": "PDF 截图工具",
     }
     for key, check in checks.items():
         state = "已检测到" if check["available"] else "未检测到"
+        if check.get("status") in {"timeout", "compile_failed", "probe_unavailable"}:
+            state = "未能确认"
         detail = f"：{check['path']}" if check["path"] else ""
         if key == "quarto" and check.get("source"):
             detail += f"（来源：{check['source']}；版本：{check['version']}）"
+        if check.get("diagnostic"):
+            detail += f"（{check['diagnostic']}）"
         typer.echo(f"{labels[key]}：{state}{detail}")
 
 
@@ -1339,6 +1693,12 @@ def approve(
     if not resolved_artifact.is_relative_to(opened_workspace.root.resolve()):
         raise typer.BadParameter("工件必须位于指定工作区内")
     decision_target = target_for_artifact(opened_workspace, resolved_artifact)
+    if decision_target is UserDecisionTarget.BRIEF:
+        try:
+            require_original_reader_request(opened_workspace, persisted=True)
+        except ValueError as error:
+            typer.echo(f'无法确认当前产物：{error}', err=True)
+            raise typer.Exit(code=1) from error
     decision_record = None
     if decision_target is not None and managed_user_decisions(opened_workspace):
         try:
@@ -1451,6 +1811,23 @@ def approve_brief_amendment_command(
     typer.echo(f"已确认 Brief 修改：{output}")
 
 
+@zh_command("brief-schema")
+def brief_schema_command() -> None:
+    """输出具体学习成果、来源与同次出版预览的公开输入契约。"""
+    typer.echo(json.dumps({"input": StructuredBriefInput.model_json_schema(),
+                          "amendment": BriefAmendmentInput.model_json_schema(),
+                          "rules": ["未限定页数/字数时省略字段，不传空字符串", "推断要求使用requirement_sources标明model_recommendation",
+                                    "presentation承载同次确认的封面/品牌/后端，不替代用户批准"]}, ensure_ascii=False, indent=2))
+
+
+@zh_command("publication-schema")
+def publication_schema_command() -> None:
+    """输出出版更新的完整公开 JSON Schema。"""
+    typer.echo(json.dumps(PublicationUpdateInput.model_json_schema(), ensure_ascii=False, indent=2))
+
+
+
+
 @zh_command("update-publication")
 def update_publication(
     workspace: WorkspacePath,
@@ -1493,12 +1870,15 @@ def update_publication(
     try:
         refreshed = refresh_publication_delivery(opened_workspace)
     except (FileNotFoundError, RuntimeError, ValueError) as error:
+        create_orchestration_work_order(opened_workspace, refresh_reason="出版配置已更新，派生物需恢复")
         typer.echo(
             f"出版信息已更新为 {profile.edition_label}，但派生交付物刷新失败：{error}。"
             "请运行 kp status --json 读取当前恢复动作。",
             err=True,
         )
         raise typer.Exit(code=1) from error
+    if inspect_workflow(opened_workspace).stage != "completed":
+        create_orchestration_work_order(opened_workspace, refresh_reason="已受控更新出版配置与派生物")
     if not refreshed["refreshed"]:
         typer.echo(f"出版信息已更新为 {profile.edition_label}；尚未汇编书稿，后续发布阶段会自动使用该配置。")
         return
@@ -1515,112 +1895,26 @@ def update_publication(
     )
 
 
-@zh_command("freeze-token-budget")
-def freeze_token_budget_command(
-    workspace: WorkspacePath,
-    mode: Annotated[TokenMode, typer.Option(help="已确认的成本模式")] = TokenMode.LEAN,
-    book_limit_tokens: Annotated[int | None, typer.Option(help="全书 token 上限，可选")] = None,
-    chapter_limit_tokens: Annotated[int | None, typer.Option(help="单章 token 上限，可选")] = None,
-    action_limit_tokens: Annotated[int | None, typer.Option(help="单次模型动作 token 上限，可选")] = None,
-) -> None:
-    """内部：在正文批量生产前冻结模型调用成本边界。"""
-    try:
-        budget = freeze_token_budget(
-            _open_workspace(workspace),
-            mode=mode,
-            book_limit_tokens=book_limit_tokens,
-            chapter_limit_tokens=chapter_limit_tokens,
-            action_limit_tokens=action_limit_tokens,
-        )
-    except (FileNotFoundError, ValueError) as error:
-        typer.echo(f"无法冻结 token 预算：{error}", err=True)
-        raise typer.Exit(code=1) from error
-    typer.echo(
-        json.dumps(
-            {
-                "mode": budget.mode.value,
-                "book_limit_tokens": budget.book_limit_tokens,
-                "chapter_limit_tokens": budget.chapter_limit_tokens,
-                "action_limit_tokens": budget.action_limit_tokens,
-            },
-            ensure_ascii=False,
-        )
-    )
 
 
-@zh_command("token-preflight")
-def token_preflight_command(
-    workspace: WorkspacePath,
-    input_path: Annotated[Path, typer.Option("--from", help="模型动作预算 JSON 或 YAML 输入")],
-) -> None:
-    """内部：在宿主调用模型前预约 token 预算或返回 SHA 缓存命中。"""
-    opened_workspace = _open_workspace(workspace)
-    try:
-        request = _load_token_budget_action_request(
-            _workspace_input_path(opened_workspace, input_path, label="token 模型动作输入")
-        )
-        result = preflight_model_action(opened_workspace, request)
-    except (FileNotFoundError, TokenBudgetExceededError, ValueError) as error:
-        typer.echo(f"无法预约 token 模型动作：{error}", err=True)
-        raise typer.Exit(code=1) from error
-    typer.echo(result.model_dump_json())
 
 
-@zh_command("complete-token-action")
-def complete_token_action_command(
-    action_id: Annotated[str, typer.Argument(help="token 预算动作标识")],
-    workspace: WorkspacePath,
-    input_tokens: Annotated[int, typer.Option(help="宿主报告或保守估算的输入 token")],
-    output_tokens: Annotated[int, typer.Option(help="宿主报告或保守估算的输出 token")],
-    usage_source: Annotated[str, typer.Option(help="actual、estimated 或 unavailable")],
-) -> None:
-    """内部：写入已完成模型动作的真实或显式估算 usage。"""
-    if usage_source not in {"actual", "estimated", "unavailable"}:
-        typer.echo("无法完成 token 模型动作：usage_source 只能是 actual、estimated 或 unavailable。", err=True)
-        raise typer.Exit(code=1)
-    try:
-        action = complete_model_action(
-            _open_workspace(workspace),
-            action_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            usage_source=usage_source,
-        )
-    except (FileNotFoundError, ValueError) as error:
-        typer.echo(f"无法完成 token 模型动作：{error}", err=True)
-        raise typer.Exit(code=1) from error
-    typer.echo(action.model_dump_json())
 
 
-@zh_command("fail-token-action")
-def fail_token_action_command(
-    action_id: Annotated[str, typer.Argument(help="token 预算动作标识")],
-    workspace: WorkspacePath,
-) -> None:
-    """内部：标记失败模型动作，为唯一允许的重试保留审计证据。"""
-    try:
-        action = fail_model_action(_open_workspace(workspace), action_id)
-    except (FileNotFoundError, ValueError) as error:
-        typer.echo(f"无法标记 token 模型动作失败：{error}", err=True)
-        raise typer.Exit(code=1) from error
-    typer.echo(action.model_dump_json())
 
 
-@zh_command("token-budget-status")
-def token_budget_status_command(workspace: WorkspacePath) -> None:
-    """内部：读取已冻结 token 预算与当前用量，不触发模型调用。"""
-    try:
-        budget = load_token_budget(_open_workspace(workspace))
-    except (FileNotFoundError, ValueError) as error:
-        typer.echo(f"无法读取 token 预算：{error}", err=True)
-        raise typer.Exit(code=1) from error
-    typer.echo(budget.model_dump_json())
+
+
+
+
+
+
 
 
 @zh_command("controlled-exception-schema")
-def controlled_exception_schema_command() -> None:
+def controlled_exception_schema_command(json_output: Annotated[bool, typer.Option("--json", help="输出JSON，默认仍为YAML")] = False) -> None:
     """输出受控例外的语义输入 Schema；不要求填写 SHA-256。"""
-    typer.echo(yaml.safe_dump(controlled_exception_schema(), allow_unicode=True, sort_keys=False))
+    typer.echo(json.dumps(controlled_exception_schema(), ensure_ascii=False, indent=2) if json_output else yaml.safe_dump(controlled_exception_schema(), allow_unicode=True, sort_keys=False))
 
 
 @zh_command("submit-controlled-exceptions")
@@ -1663,9 +1957,36 @@ def outline(workspace: WorkspacePath) -> None:
 
 
 @zh_command("outline-schema")
-def outline_schema() -> None:
+def outline_schema(json_output: Annotated[bool, typer.Option("--json", help="输出JSON，默认仍为YAML")] = False) -> None:
     """输出课程蓝图可填写的公开 Schema，不读取工作区。"""
-    typer.echo(yaml.safe_dump(curriculum_outline_schema(), allow_unicode=True, sort_keys=False))
+    typer.echo(json.dumps(curriculum_outline_schema(), ensure_ascii=False, indent=2) if json_output else yaml.safe_dump(curriculum_outline_schema(), allow_unicode=True, sort_keys=False))
+
+
+@zh_command("claim-classification-schema")
+def claim_classification_schema_command() -> None:
+    """输出事实、作者建议和情境案例的受控分类输入契约。"""
+    typer.echo(json.dumps(classification_schema(), ensure_ascii=False, indent=2))
+
+
+@zh_command("classify-claim")
+def classify_claim_command(
+    workspace: WorkspacePath,
+    input_path: Annotated[Path, typer.Option("--from", help="工作区内的 Claim 分类 JSON/YAML 文件")],
+) -> None:
+    """将当前 Claim 分类以合约哈希绑定并追加到审计台账。"""
+    opened_workspace = _open_workspace(workspace)
+    resolved = input_path.expanduser().resolve()
+    if not resolved.is_file() or not resolved.is_relative_to(opened_workspace.root.resolve()):
+        typer.echo("Claim 分类输入必须位于当前书稿工作区内。", err=True)
+        raise typer.Exit(code=1)
+    try:
+        raw = json.loads(resolved.read_text(encoding="utf-8")) if resolved.suffix.lower() == ".json" else yaml.safe_load(resolved.read_text(encoding="utf-8"))
+        record = append_claim_classification(opened_workspace, ClaimClassificationInput.model_validate(raw))
+        create_orchestration_work_order(opened_workspace, refresh_reason=f"Claim {record.claim_id} 分类已变更")
+    except (OSError, ValueError, TypeError, yaml.YAMLError) as error:
+        typer.echo(f"无法分类 Claim：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(f"已记录 Claim 分类：{record.claim_id} → {record.kind.value}")
 
 
 @zh_command("submit-outline")
@@ -1731,7 +2052,6 @@ def _echo_estimated_budget_warning(workspace: Workspace) -> None:
         typer.echo(
             f"提示：Brief 未设置字数额门，已按页数目标估算章节预算（全书约 {total_min} 字下限）。"
             "写作时请对照章节合约的 word 预算，避免交付阶段页数不达标。",
-            err=True,
         )
 
 
@@ -1760,6 +2080,7 @@ def research(
 ) -> None:
     """追加映射到事实声明的来源台账条目。"""
     opened_workspace = _open_workspace(workspace)
+    action_work_order_id = _capture_orchestration_action_or_exit(opened_workspace, "research")
     try:
         bindings = current_claim_contract_bindings(opened_workspace)
     except ValueError as error:
@@ -1786,6 +2107,13 @@ def research(
     opened_workspace.append_event(
         "source_registered", {"source_id": source_id, "claim_ids": normalized_claims}
     )
+    complete_orchestration_action(
+        opened_workspace,
+        "research",
+        proof=f"已追加来源 {source_id}，绑定当前合约 Claim：{', '.join(normalized_claims)}",
+        output_paths=[ledger_path],
+        work_order_id=action_work_order_id,
+    )
     typer.echo(f"已登记来源台账：{ledger_path}")
 
 
@@ -1807,20 +2135,42 @@ def assumption(
 ) -> None:
     """追加产品假设的处理决定；同一标识以最后一条记录为当前状态。"""
     opened_workspace = _open_workspace(workspace)
-    entry = AssumptionLedgerEntry(
-        assumption_id=assumption_id,
-        statement=statement,
-        impact=impact,
-        disposition=disposition,
-        rationale=rationale,
-        evidence_claim_ids=claim or [],
-    )
-    ledger_path = opened_workspace.root / "research" / "assumption-ledger.jsonl"
-    append_assumption_entry(ledger_path, entry)
-    opened_workspace.append_event(
-        "assumption_recorded",
-        {"assumption_id": assumption_id, "disposition": disposition.value},
-    )
+    try:
+        entry = AssumptionLedgerEntry(
+            assumption_id=assumption_id,
+            statement=statement,
+            impact=impact,
+            disposition=disposition,
+            rationale=rationale,
+            evidence_claim_ids=[claim_id.casefold() for claim_id in claim or []],
+        )
+        if disposition is AssumptionDisposition.VERIFIED:
+            if not entry.evidence_claim_ids:
+                raise ValueError("已验证假设必须关联至少一个事实声明 ID。")
+            bindings = current_claim_contract_bindings(opened_workspace)
+            unknown = sorted(set(entry.evidence_claim_ids) - set(bindings))
+            if unknown:
+                raise ValueError(f"Claim 未在当前章节合约中声明：{', '.join(unknown)}")
+            findings = validate_claims(
+                set(entry.evidence_claim_ids),
+                opened_workspace.root / "research" / "source-ledger.jsonl",
+                bindings,
+            )
+            if findings:
+                raise ValueError(findings[0].message)
+        update_snapshot = capture_orchestration_update(opened_workspace)
+        ledger_path = opened_workspace.root / "research" / "assumption-ledger.jsonl"
+        append_assumption_entry(ledger_path, entry)
+        opened_workspace.append_event(
+            "assumption_recorded",
+            {"assumption_id": assumption_id, "disposition": disposition.value},
+        )
+        refresh_orchestration_after_controlled_update(
+            opened_workspace, "assumption", snapshot=update_snapshot, output_paths=[ledger_path]
+        )
+    except (OSError, ValueError) as error:
+        typer.echo(f"无法记录产品假设：{error}", err=True)
+        raise typer.Exit(code=1) from error
     typer.echo(f"已记录产品假设：{assumption_id}")
 
 
@@ -1888,20 +2238,22 @@ def contract(workspace: WorkspacePath) -> None:
 def draft(chapter_number: int, workspace: WorkspacePath) -> None:
     """创建绑定当前章节合约的空白正文输入。"""
     opened_workspace = _open_workspace(workspace)
-    action_work_order_id = _capture_orchestration_action_or_exit(opened_workspace, "draft")
+    action_work_order_id = _capture_orchestration_action_or_exit(opened_workspace, "draft", chapter_number=chapter_number)
     try:
         output = create_chapter_draft(opened_workspace, chapter_number)
     except (FileNotFoundError, FileExistsError, ValueError) as error:
         fail_orchestration_action(opened_workspace, "draft", str(error))
         typer.echo(f"无法创建章节草稿：{error}", err=True)
         raise typer.Exit(code=1) from error
-    complete_orchestration_action(
-        opened_workspace,
-        "draft",
-        proof=f"已创建第 {chapter_number} 章正文草稿",
-        output_paths=[output],
-        work_order_id=action_work_order_id,
-    )
+    if action_work_order_id is not None:
+        opened_workspace.append_event(
+            "chapter_draft_prepared",
+            {
+                "chapter_number": chapter_number,
+                "work_order_id": action_work_order_id,
+                "draft_sha256": sha256(output.read_bytes()).hexdigest(),
+            },
+        )
     typer.echo(f"已创建章节草稿：{output}")
 
 
@@ -1928,16 +2280,25 @@ def humanize_check(
     chapter_number: int,
     workspace: WorkspacePath,
     source_path: Annotated[Path, typer.Option("--from", help="中文编辑后的章节 Markdown 文件")],
+    before_path: Annotated[Path | None, typer.Option("--before", help="工作区内保留的编辑前稿；对比受保护技术内容")] = None,
 ) -> None:
     """运行中文终稿编辑规则并写入当前正文绑定的内部报告。"""
     try:
-        output, report = record_humanize_check(_open_workspace(workspace), chapter_number, source_path)
+        output, report = record_humanize_check(_open_workspace(workspace), chapter_number, source_path, before_path=before_path)
     except (HumanizeReportError, FileNotFoundError, ValueError) as error:
         typer.echo(f"无法完成中文终稿编辑校验：{error}", err=True)
         raise typer.Exit(code=1) from error
-    typer.echo(f"已写入中文终稿编辑报告：{output}；阻断项={len(report.findings)}")
-    if report.findings:
+    blockers = sum(finding.severity is Severity.BLOCKER for finding in report.findings)
+    warnings = sum(finding.severity is Severity.WARNING for finding in report.findings)
+    typer.echo(f"中文终稿编辑报告：{output}；阻断项={blockers}；警告项={warnings}")
+    if blockers:
         raise typer.Exit(code=1)
+
+
+@zh_command("content-plan-schema")
+def content_plan_schema_command() -> None:
+    """输出章节内容计划的公开字段和跨字段约束。"""
+    typer.echo(json.dumps(content_plan_schema(), ensure_ascii=False, indent=2))
 
 
 @zh_command("content-plan-template")
@@ -1945,7 +2306,7 @@ def content_plan_template_command(chapter_number: int, workspace: WorkspacePath)
     """生成当前章节的内容块计划模板与只读小节上下文。"""
     try:
         template, context = create_content_plan_template(_open_workspace(workspace), chapter_number)
-    except (ContentPlanError, FileNotFoundError, ValueError) as error:
+    except (ContentPlanError, OSError, ValueError) as error:
         typer.echo(f"无法生成章节内容计划模板：{error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"已生成章节内容计划模板：{template}；当前上下文：{context}")
@@ -1956,19 +2317,115 @@ def submit_content_plan_command(
     chapter_number: int,
     workspace: WorkspacePath,
     input_path: Annotated[Path, typer.Option("--from", help="章节内容计划 YAML 输入")],
+    replace_draft: bool = False,
 ) -> None:
     """提交绑定当前章节合约的内容块计划，不接受内部哈希字段。"""
     opened_workspace = _open_workspace(workspace)
     try:
+        update_snapshot = capture_orchestration_update(opened_workspace)
         output = submit_content_plan(
             opened_workspace,
             chapter_number,
             _workspace_input_path(opened_workspace, input_path, label="章节内容计划输入"),
+            replace_draft=replace_draft,
         )
-    except (ContentPlanError, FileNotFoundError, ValueError) as error:
+        refresh_orchestration_after_controlled_update(opened_workspace, "submit-content-plan",
+            snapshot=update_snapshot, output_paths=[output])
+    except (ContentPlanError, OSError, ValueError) as error:
         typer.echo(f"无法提交章节内容计划：{error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"已提交章节内容计划：{output}")
+
+
+@zh_command("developmental-review-template")
+def developmental_review_template_command(
+    chapter_number: int,
+    workspace: WorkspacePath,
+    source_path: Annotated[Path, typer.Option("--from", help="当前章节源稿")],
+) -> None:
+    """输出当前结构审核单元、语义观察输入及预算绑定。"""
+    try:
+        template = create_structure_review_template(_open_workspace(workspace), chapter_number, source_path)
+    except (OSError, ValueError) as error:
+        typer.echo(f"无法生成结构审核模板：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(json.dumps(template, ensure_ascii=False, indent=2))
+
+
+@zh_command("developmental-review-schema")
+def developmental_review_schema_command() -> None:
+    """输出当前结构观察及六项教学检查Schema，旧输入兼容读取。"""
+    typer.echo(json.dumps(StructureReviewInput.model_json_schema(), ensure_ascii=False))
+
+
+@zh_command("example-check-template")
+def example_check_template_command(workspace: WorkspacePath,
+    source_path: Annotated[Path, typer.Option("--from", help="当前工作区内源稿")]) -> None:
+    """列出当前Python例子与实际代码，查看不执行。"""
+    from knowledge_product_workflow.example_checks import example_template
+    try:
+        typer.echo(json.dumps(example_template(_open_workspace(workspace), source_path), ensure_ascii=False, indent=2))
+    except (OSError, ValueError) as error:
+        typer.echo(f"无法读取例子：{error}", err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("run-example-check")
+def run_example_check_command(chapter_number: int, workspace: WorkspacePath,
+    source_path: Annotated[Path, typer.Option("--from", help="已审阅且获授权的当前源稿")],
+    example_index: Annotated[int, typer.Option("--example-index", min=1)] = 1,
+    approve_execution: Annotated[bool, typer.Option("--approve-execution", help="明确授权本段代码执行；不是安全沙箱")] = False) -> None:
+    """在10秒上限子进程实际运行获授权例子，保留失败和原始输出。"""
+    from knowledge_product_workflow.example_checks import run_python_example
+    try:
+        opened = _open_workspace(workspace)
+        _illustration_authorization(opened, chapter_number, source_path)
+        output = run_python_example(opened, source_path, example_index, approved=approve_execution)
+    except (OSError, ValueError) as error:
+        typer.echo(f"无法运行例子：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(str(output))
+
+
+@zh_command("adopt-reading-policy")
+def adopt_reading_policy_command(
+    workspace: WorkspacePath,
+    confirm: Annotated[bool, typer.Option("--confirm", help="已获得用户明确采用新版阅读政策的决定")] = False,
+) -> None:
+    """预览或受控采用阅读结构政策2；保留旧正文与交付物。"""
+    from knowledge_product_workflow.developmental import (
+        adopt_reading_policy,
+        reading_policy_preview,
+    )
+    try:
+        opened = _open_workspace(workspace)
+        result = adopt_reading_policy(opened) if confirm else reading_policy_preview(opened)
+    except (OSError, ValueError) as error:
+        typer.echo(f"无法采用阅读政策：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@zh_command("record-developmental-review")
+def record_developmental_review_command(
+    chapter_number: int,
+    workspace: WorkspacePath,
+    source_path: Annotated[Path, typer.Option("--chapter-source", help="当前章节源稿")],
+    input_path: Annotated[Path, typer.Option("--from", help="填好的结构观察JSON")],
+) -> None:
+    """提交实际语义观察；不自动将检测指标或模板签为通过。"""
+    opened = _open_workspace(workspace)
+    try:
+        update_snapshot = capture_orchestration_update(opened)
+        path = _workspace_input_path(opened, input_path, label="结构观察")
+        payload = StructureReviewInput.model_validate_json(path.read_text(encoding="utf-8"))
+        output = record_structure_review(opened, chapter_number, source_path, payload)
+        refresh_orchestration_after_controlled_update(opened, "record-developmental-review",
+            snapshot=update_snapshot, output_paths=[output])
+    except (OSError, ValueError) as error:
+        typer.echo(f"无法提交结构观察：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(f"已提交结构观察：{output}")
 
 
 @zh_command("developmental-check")
@@ -1978,9 +2435,11 @@ def developmental_check_command(
     source_path: Annotated[Path, typer.Option("--from", help="章节初稿 Markdown 文件")],
 ) -> None:
     """运行版本绑定的发展性编辑检查；它不直接改写正文。"""
+    opened_workspace = _open_workspace(workspace)
     try:
+        update_snapshot = capture_orchestration_update(opened_workspace)
         output, report = record_developmental_check(
-            _open_workspace(workspace), chapter_number, source_path
+            opened_workspace, chapter_number, source_path
         )
     except (DevelopmentalEditError, FileNotFoundError, ValueError) as error:
         typer.echo(f"无法完成发展性编辑检查：{error}", err=True)
@@ -1988,8 +2447,12 @@ def developmental_check_command(
     if output is None or report is None:
         typer.echo("当前旧版出版配置不要求发展性编辑报告。")
         return
-    typer.echo(f"已写入发展性编辑报告：{output}；阻断项={len(report.findings)}")
-    if report.findings:
+    refresh_orchestration_after_controlled_update(opened_workspace, "developmental-check",
+        snapshot=update_snapshot, output_paths=[output])
+    blockers = sum(finding.severity.value == "blocker" for finding in report.findings)
+    warnings = sum(finding.severity.value == "warning" for finding in report.findings)
+    typer.echo(f"已写入发展性编辑报告：{output}；阻断项={blockers}；警告项={warnings}")
+    if blockers:
         raise typer.Exit(code=1)
 
 
@@ -2015,6 +2478,208 @@ def diagram_schema_command() -> None:
     typer.echo(json.dumps(diagram_schema(), ensure_ascii=False, indent=2))
 
 
+@zh_command("illustration-schema")
+def illustration_schema_command() -> None:
+    """查看插图准入、资产风格检查及正式风格角色。"""
+    from knowledge_product_workflow.illustration_budget import ImageCall
+    from knowledge_product_workflow.illustration_palette import DiagramPresentationInput
+    from knowledge_product_workflow.illustrations import IllustrationAdmission
+    typer.echo(json.dumps({"presentation": DiagramPresentationInput.model_json_schema(), "style_v2": style_resources(2), "admission": IllustrationAdmission.model_json_schema(),
+                           "style_check": AssetStyleInput.model_json_schema(), "call_receipt": ImageCall.model_json_schema(),
+                           "style": style_resources()}, ensure_ascii=False, indent=2))
+
+
+@zh_command("freeze-illustration-budget")
+def freeze_illustration_budget_command(
+    workspace: WorkspacePath,
+    approved_by: Annotated[str, typer.Option("--by", help="同次预算确认身份")],
+    mode: str = "lean",
+    chapter_slots: Annotated[int, typer.Option(help="仅政策1兼容；政策2来自批准图任务")] = 1,
+    book_slots: Annotated[int, typer.Option(help="仅政策1兼容；政策2不设固定图数配额")] = 6,
+    calls_per_slot: int = 2,
+) -> None:
+    """从批准图任务冻结需求预算；旧政策兼容，修改保留消费。"""
+    try:
+        budget = freeze_image_budget(_open_workspace(workspace), approved_by=approved_by,
+                                    mode=mode, chapter_slots=chapter_slots, book_slots=book_slots,
+                                    calls_per_slot=calls_per_slot)
+    except (OSError, ValueError) as error:
+        typer.echo(f"无法冻结生图预算：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(budget.model_dump_json(indent=2))
+
+
+@zh_command("update-diagram-presentation")
+def update_diagram_presentation_command(
+    chapter_number: int, diagram_id: str, workspace: WorkspacePath,
+    chapter_source: Annotated[Path, typer.Option()],
+    input_path: Annotated[Path | None, typer.Option("--from")] = None,
+) -> None:
+    """冻结图级展示候选；不改正文或释放作者租约。"""
+    from knowledge_product_workflow.diagrams import _require_workspace_file, _validate_diagram_id
+    from knowledge_product_workflow.illustration_palette import DiagramPresentationInput
+    from knowledge_product_workflow.illustration_updates import propose_presentation
+    try:
+        opened = _open_workspace(workspace)
+        _validate_diagram_id(diagram_id)
+        source = _require_workspace_file(opened, chapter_source, label="章节源稿")
+        _illustration_authorization(opened, chapter_number, source)
+        if input_path is None:
+            from knowledge_product_workflow.diagrams import DiagramInput
+            from knowledge_product_workflow.illustration_palette import load_category_colors
+            current = DiagramInput.model_validate_json((opened.root/"runs/diagrams"/f"{diagram_id}.input.json").read_text(encoding="utf-8"))
+            if current.presentation is None:
+                raise ValueError("旧图升级须提供完整展示输入")
+            values=current.presentation.model_dump()
+            colors=load_category_colors(opened)
+            for concept_key,color_key in (("concept_nodes","node_colors"),("concept_groups","group_colors")):
+                for reference,concept in values[concept_key].items():
+                    if concept in colors:
+                        values[color_key][reference]=colors[concept]
+            payload=DiagramPresentationInput.model_validate(values)
+        else:
+            payload = DiagramPresentationInput.model_validate_json(_require_workspace_file(opened,input_path,label="展示输入").read_text(encoding="utf-8"))
+        path = propose_presentation(opened,chapter_number,diagram_id,payload)
+        typer.echo(json.dumps({"diagram_input":str(path),"next_action":"illustration-preflight","chapter_number":chapter_number,"same_slot":True},ensure_ascii=False))
+    except (OSError, ValueError) as error:
+        typer.echo(str(error),err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("activate-illustration-candidate")
+def activate_illustration_candidate_command(
+    chapter_number: int, diagram_id: str, call_id: str, workspace: WorkspacePath,
+    chapter_source: Annotated[Path, typer.Option()],
+    confirm_mixed_candidate: Annotated[bool, typer.Option(help="仅当前真实本人响应认可混合样品及原来源回执后使用")] = False,
+    approved_by: Annotated[str | None, typer.Option("--by", help="当前本人认可身份；不由Agent代签")] = None,
+    user_response: Annotated[str | None, typer.Option("--response", help="当前真实本人响应；仅落盘其SHA")] = None,
+    review_input: Annotated[str | None, typer.Option(help="已展示当前候选的review_input；由illustration-style-template返回")] = None,
+) -> None:
+    """候选风格检查后原子切换；failed不能覆盖当前图。"""
+    from knowledge_product_workflow.diagrams import _require_workspace_file, _validate_diagram_id
+    from knowledge_product_workflow.illustration_updates import activate_candidate
+    try:
+        opened = _open_workspace(workspace)
+        _validate_diagram_id(diagram_id)
+        source = _require_workspace_file(opened,chapter_source,label="章节源稿")
+        _illustration_authorization(opened,chapter_number,source)
+        typer.echo(str(activate_candidate(opened,diagram_id,call_id,chapter_number=chapter_number,
+                                          confirm_mixed_candidate=confirm_mixed_candidate,
+                                          approved_by=approved_by, user_response=user_response,
+                                          review_input=review_input)))
+    except (OSError,ValueError) as error:
+        typer.echo(str(error),err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("illustration-budget-status")
+def illustration_budget_status_command(workspace: WorkspacePath) -> None:
+    """查看稳定图槽位、调用、费用来源；不将未知费用当零。"""
+    try:
+        typer.echo(load_image_budget(_open_workspace(workspace)).model_dump_json(indent=2))
+    except (OSError, ValueError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("illustration-preflight")
+def illustration_preflight_command(
+    chapter_number: int, workspace: WorkspacePath,
+    input_path: Annotated[Path, typer.Option("--from")],
+    chapter_source: Annotated[Path, typer.Option()],
+    supports_reference: Annotated[bool, typer.Option("--supports-reference/--no-supports-reference")] = False,
+    requested_model: str | None = None, actual_model: str | None = None,
+    repair_reason: str | None = None,
+    reference_capacity: int | None = None,
+) -> None:
+    """先准入/预约/落盘最小提示词；不调用任何模型。"""
+    from knowledge_product_workflow.diagrams import _load_diagram_input, _require_workspace_file
+    try:
+        opened = _open_workspace(workspace)
+        source = _require_workspace_file(opened, chapter_source, label="章节源稿")
+        _illustration_authorization(opened, chapter_number, source)
+        semantic = _load_diagram_input(opened, chapter_number,
+                                       _require_workspace_file(opened, input_path, label="语义输入"))
+        result = preflight_illustration(opened, chapter_number, semantic,
+                                       supports_references=supports_reference,
+                                       requested_model=requested_model, actual_model=actual_model,
+                                       repair_reason=repair_reason, reference_capacity=reference_capacity)
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+    except (OSError, ValueError) as error:
+        typer.echo(f"插图准入失败：{error}", err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("record-illustration-call")
+def record_illustration_call_command(
+    call_id: str, workspace: WorkspacePath,
+    state: Annotated[str, typer.Option(help="dispatched/completed/failed/unknown/cancelled")],
+    image: Path | None = None, actual_cost: str | None = None, usage_source: str = "unavailable",
+    material_origin: Annotated[str | None, typer.Option(help="仅声明host-image/synthetic/unknown，不能证明实际AI来源")] = None,
+    source_evidence: Annotated[Path | None, typer.Option(help="completed原件的工作区内原工具／会话回执；保留并绑定SHA")] = None,
+) -> None:
+    """发送前一次消费凭证；返回后记录实际图片及已知/未知费用。"""
+    try:
+        result = record_image_call(_open_workspace(workspace), call_id, state=state,
+                                   image_path=image, actual_cost=Decimal(actual_cost) if actual_cost else None,
+                                   usage_source=usage_source, material_origin=material_origin,
+                                   source_evidence=source_evidence)
+        typer.echo(result.model_dump_json(indent=2))
+    except (OSError, ValueError) as error:
+        typer.echo(f"调用记录失败：{error}", err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("submit-illustration")
+def submit_illustration_command(
+    chapter_number: int, workspace: WorkspacePath,
+    input_path: Annotated[Path, typer.Option("--from")],
+    chapter_source: Annotated[Path, typer.Option()], image: Annotated[Path, typer.Option()],
+    call_id: Annotated[str, typer.Option()],
+) -> None:
+    """受控提交宿主PNG并派生PDF/清单；不会额外生图或冒充矢量。"""
+    try:
+        opened = _open_workspace(workspace)
+        from knowledge_product_workflow.diagrams import _require_workspace_file
+        source = _require_workspace_file(opened, chapter_source, label="章节源稿")
+        _illustration_authorization(opened, chapter_number, source)
+        asset, manifest = submit_diagram(opened, chapter_number, source, input_path,
+                                         host_image=image, image_call_id=call_id)
+        typer.echo(f"已提交宿主位图资产：{asset}；renderer={manifest.renderer}；仍需资产风格检查")
+    except (OSError, ValueError) as error:
+        typer.echo(f"插图提交失败：{error}", err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("record-illustration-style-check")
+def record_illustration_style_command(
+    workspace: WorkspacePath, input_path: Annotated[Path, typer.Option("--from")],
+) -> None:
+    """绑定当前资产逐项风格观察，失败/过期证明阻断章节及发布。"""
+    from knowledge_product_workflow.diagrams import _require_workspace_file
+    try:
+        opened = _open_workspace(workspace)
+        path = _require_workspace_file(opened, input_path, label="风格观察")
+        output = record_asset_style(opened, AssetStyleInput.model_validate_json(path.read_text(encoding="utf-8")))
+        typer.echo(f"已记录资产风格证明：{output}；此记录不代表用户成页批准")
+    except (OSError, ValueError) as error:
+        typer.echo(f"风格检查失败：{error}", err=True)
+        raise typer.Exit(1) from error
+
+
+@zh_command("illustration-style-template")
+def illustration_style_template_command(diagram_id: str, workspace: WorkspacePath, candidate_call_id: str | None = None) -> None:
+    """生成语义风格观察模板与只读预算指纹，不让宿主手算hash。"""
+    from knowledge_product_workflow.diagrams import _validate_diagram_id
+    from knowledge_product_workflow.illustrations import create_style_review_template
+    try:
+        _validate_diagram_id(diagram_id)
+        typer.echo(json.dumps(create_style_review_template(_open_workspace(workspace), diagram_id,candidate_call_id), ensure_ascii=False, indent=2))
+    except (OSError, ValueError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
 @zh_command("insert-diagram-reference")
 def insert_diagram_reference_command(
     chapter_number: int,
@@ -2025,11 +2690,13 @@ def insert_diagram_reference_command(
         Path | None,
         typer.Option("--diagram-input", help="已填写的语义图表 JSON；用于写入最终图注"),
     ] = None,
+    rebind_position: Annotated[bool, typer.Option("--rebind-position", help="正文改变后受控重解析语义位置，不重绘资产")] = False,
 ) -> None:
     """在当前章节源稿中幂等插入一个受控 D2 PDF 图表引用。"""
     try:
         output = insert_diagram_reference(
-            _open_workspace(workspace), chapter_number, source_path, diagram_id, diagram_input_path
+            _open_workspace(workspace), chapter_number, source_path, diagram_id, diagram_input_path,
+            rebind_position=rebind_position,
         )
     except (DiagramSubmissionError, FileNotFoundError, ValueError) as error:
         typer.echo(f"无法插入图表引用：{error}", err=True)
@@ -2043,11 +2710,12 @@ def diagram_template_command(
     workspace: WorkspacePath,
     chapter_source: Annotated[Path, typer.Option("--chapter-source", help="当前工作区内的章节 Markdown 源稿")],
     diagram_id: Annotated[str, typer.Option("--diagram-id", help="小写图表 ID")],
+    task_id: Annotated[str | None, typer.Option("--task-id", help="政策2批准的图任务，缺省与图表ID相同")] = None,
 ) -> None:
     """生成当前章节的语义图表填写模板与上下文，不暴露 SHA 或内部清单。"""
     try:
         template, context = create_diagram_template(
-            _open_workspace(workspace), chapter_number, chapter_source, diagram_id
+            _open_workspace(workspace), chapter_number, chapter_source, diagram_id, task_id
         )
     except (DiagramSubmissionError, FileNotFoundError, ValueError) as error:
         typer.echo(f"无法生成图表模板：{error}", err=True)
@@ -2059,6 +2727,28 @@ def diagram_template_command(
 def chapter_compliance_schema_command() -> None:
     """输出章节合规语义映射的公开 Schema，不读取工作区。"""
     typer.echo(json.dumps(chapter_compliance_schema(), ensure_ascii=False, indent=2))
+
+
+@zh_command("check-chapter")
+def check_chapter_command(
+    chapter_number: int,
+    workspace: WorkspacePath,
+    source_path: Annotated[Path, typer.Option("--from", help="当前工作区内的章节 Markdown 源稿")],
+    json_output: Annotated[bool, typer.Option("--json", help="输出机器可读诊断")] = False,
+) -> None:
+    """只读查看章节结构、两份终稿报告及合规映射的刷新顺序。"""
+    try:
+        report = check_chapter(_open_workspace(workspace), chapter_number, source_path)
+    except (FileNotFoundError, ValueError) as error:
+        typer.echo(f"无法检查章节：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    for name, item in report["checks"].items():
+        typer.echo(f"{name}: {item['state']}")
+    for action in report["refresh_actions"]:
+        typer.echo(f"下一步：{action}")
 
 
 @zh_command("chapter-compliance-template")
@@ -2078,6 +2768,40 @@ def chapter_compliance_template_command(
     typer.echo(f"已生成章节合规语义模板：{template}；当前标题候选：{context}")
 
 
+@zh_command("render-review-preview")
+def render_review_preview_command(workspace: WorkspacePath) -> None:
+    """渲染全书诊断预览，不覆盖正式交付或创建发布清单。"""
+    from knowledge_product_workflow.publishing import render_review_preview
+    try:
+        output = render_review_preview(_open_workspace(workspace))
+    except (OSError, ValueError, RuntimeError) as error:
+        typer.echo(f"诊断预览未完成：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(f"仅供诊断、未发布：{output}")
+
+
+@zh_command("checkpoint-chapter-content")
+def checkpoint_chapter_content_command(
+    chapter_number: int,
+    workspace: WorkspacePath,
+    source_path: Annotated[Path, typer.Option("--from", help="当前正文源稿")],
+    compliance_path: Annotated[Path, typer.Option("--compliance", help="当前合规映射")],
+) -> None:
+    """记录正文就绪与待办图；释放正文租约，不伪造章节完整提交。"""
+    from knowledge_product_workflow.content_checkpoint import checkpoint_chapter_content
+    opened = _open_workspace(workspace)
+    order = _capture_orchestration_action_or_exit(opened, "checkpoint-chapter-content", chapter_number=chapter_number)
+    try:
+        output = checkpoint_chapter_content(opened, chapter_number, source_path, compliance_path)
+    except (OSError, ValueError) as error:
+        fail_orchestration_action(opened, "checkpoint-chapter-content", str(error))
+        typer.echo(f"无法建立正文检查点：{error}", err=True)
+        raise typer.Exit(1) from error
+    complete_orchestration_action(opened, "checkpoint-chapter-content", proof="chapter_content_checkpointed：正文就绪、资产待办，非完整提交",
+                                  output_paths=[output], work_order_id=order)
+    typer.echo(f"正文检查点已记录，待办图仍阻断正式交付：{output}")
+
+
 @zh_command("submit-chapter")
 def submit_chapter_command(
     chapter_number: int,
@@ -2087,7 +2811,7 @@ def submit_chapter_command(
 ) -> None:
     """受控提交一章正文及其合规映射，不接受手工跳过体裁契约。"""
     opened_workspace = _open_workspace(workspace)
-    action_work_order_id = _capture_orchestration_action_or_exit(opened_workspace, "submit-chapter")
+    action_work_order_id = _capture_orchestration_action_or_exit(opened_workspace, "submit-chapter", chapter_number=chapter_number)
     try:
         chapter, compliance = submit_chapter(opened_workspace, chapter_number, source_path, compliance_path)
     except (ChapterSubmissionError, FileNotFoundError, ValueError) as error:
@@ -2309,6 +3033,41 @@ def render_pdf_command(workspace: WorkspacePath) -> None:
         work_order_id=action_work_order_id,
     )
     typer.echo(f"已渲染 PDF：{output}")
+
+
+@zh_command("repair-pdf-preview")
+def repair_pdf_preview_command(workspace: WorkspacePath) -> None:
+    """Rebuild the page-preview derivative of an already rendered current PDF."""
+    opened_workspace = _open_workspace(workspace)
+    try:
+        authorize_command(opened_workspace, "repair-pdf-preview")
+    except WorkflowAuthorizationError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from error
+    action_work_order_id = _capture_orchestration_action_or_exit(
+        opened_workspace, "repair-pdf-preview"
+    )
+    try:
+        output, preview = render_pdf_preview_set(
+            opened_workspace.root / "delivery" / "book.pdf",
+            opened_workspace.root / "runs" / "pdf-preview",
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        fail_orchestration_action(opened_workspace, "repair-pdf-preview", str(error))
+        typer.echo(f"PDF 预览修复失败：{error}", err=True)
+        raise typer.Exit(code=1) from error
+    opened_workspace.append_event(
+        "pdf_preview_repaired",
+        {"page_count": len(preview.pages), "preview_manifest": str(output.relative_to(opened_workspace.root))},
+    )
+    complete_orchestration_action(
+        opened_workspace,
+        "repair-pdf-preview",
+        proof="已修复当前 PDF 的页面预览",
+        output_paths=[output],
+        work_order_id=action_work_order_id,
+    )
+    typer.echo(f"已修复 PDF 页面预览：{output}")
 
 
 @zh_command("validate-delivery")

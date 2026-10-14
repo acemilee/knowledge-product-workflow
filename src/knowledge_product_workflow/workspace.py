@@ -23,7 +23,7 @@ class Workspace:
     root: Path
 
     @classmethod
-    def create(cls, root: Path, book_id: str) -> Workspace:
+    def create(cls, root: Path, book_id: str, *, current_policy: bool = False) -> Workspace:
         """Create an empty workspace without overwriting an existing run."""
         workspace = cls(root=(root.expanduser() / book_id).resolve())
         if workspace.root.exists():
@@ -36,10 +36,8 @@ class Workspace:
         # this control-plane marker separate from reader-facing book artifacts.
         from knowledge_product_workflow.runtime import initialize_new_orchestration
 
-        initialize_new_orchestration(workspace)
-        from knowledge_product_workflow.token_budget import initialize_token_budget
+        initialize_new_orchestration(workspace, current_policy=current_policy)
 
-        initialize_token_budget(workspace)
         return workspace
 
     @classmethod

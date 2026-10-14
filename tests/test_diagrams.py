@@ -1,13 +1,20 @@
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+from pypdf import PdfReader
 
 from knowledge_product_workflow.chapter_compliance import (
     create_chapter_compliance_template,
     submit_chapter,
 )
-from knowledge_product_workflow.d2 import D2Resolution, d2_subprocess_environment, resolve_d2
+from knowledge_product_workflow.d2 import (
+    D2Resolution,
+    d2_subprocess_environment,
+    resolve_d2,
+    resolve_diagram_browser,
+)
 from knowledge_product_workflow.diagrams import (
     DiagramInput,
     DiagramSpec,
@@ -15,13 +22,21 @@ from knowledge_product_workflow.diagrams import (
     create_diagram_template,
     diagram_schema,
     insert_diagram_reference,
+    refresh_diagram_theme,
     render_d2_source,
     submit_diagram,
     validate_current_diagram_assets,
 )
+from knowledge_product_workflow.figure_templates import render_structured_svg
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
 from knowledge_product_workflow.humanize import record_humanize_check
 from knowledge_product_workflow.models import ArtifactStatus
+from knowledge_product_workflow.presentation import (
+    PublicationPalette,
+    PublicationUpdateInput,
+    apply_publication_update,
+    preview_publication_update,
+)
 from knowledge_product_workflow.state_machine import transition
 from knowledge_product_workflow.workflows.authoring import (
     compile_chapter_contracts,
@@ -126,8 +141,24 @@ def test_d2_resolution_reads_the_persisted_user_override_when_host_env_is_stale(
     assert resolution.source == "KP_D2_PATH"
 
 
-def _approved_workspace(tmp_path: Path) -> Workspace:
+def _approved_workspace(tmp_path: Path, *, v6: bool = False) -> Workspace:
     workspace = Workspace.create(tmp_path, "diagram-guide")
+    if v6:
+        from datetime import date
+
+        import yaml
+
+        from knowledge_product_workflow.presentation import (
+            PublicationProfile,
+            _brand_palette,
+            publication_profile_path,
+        )
+        # Legacy v6 renderer/asset tests explicitly keep their old cover/style.
+        # Current new-product defaults are verified in test_foundation_v134.
+        legacy = PublicationProfile(subtitle="旧版渲染夹具", cover_label="知识产品工作流", footer_label="知识产品工作流",
+            copyright_line="© 2026 知识产品工作流", edition_label="v1.0.0", publication_date=date(2026, 10, 8),
+            reader_layout_revision=2, palette=_brand_palette("橙色基调"))
+        publication_profile_path(workspace).write_text(yaml.safe_dump(legacy.model_dump(mode="json"), allow_unicode=True), encoding="utf-8")
     brief = create_product_brief(workspace, "AI Agent 工程实践", target_audience="工程师")
     metadata, body = parse_markdown_artifact(brief.read_text(encoding="utf-8"))
     brief.write_text(
@@ -211,6 +242,53 @@ def test_diagram_submission_binds_every_generated_asset(
     assert [finding.code for finding in validate_current_diagram_assets(workspace, chapter, body + "\n正文变更。\n")] == [
         "DIAGRAM_ASSET_UNBOUND"
     ]
+
+
+def test_v6_svg_template_recolors_from_approved_profile_without_changing_chapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _approved_workspace(tmp_path, v6=True)
+    source, input_path = _source_and_input(workspace)
+    chapter = workspace.root / "chapters" / "chapter-01.md"
+    metadata, _ = parse_markdown_artifact(chapter.read_text(encoding="utf-8"))
+    chapter.write_text(render_markdown_artifact(metadata, source.read_text(encoding="utf-8")), encoding="utf-8")
+    monkeypatch.setattr("knowledge_product_workflow.diagrams.resolve_d2", lambda: (_ for _ in ()).throw(AssertionError("SVG 模板不应调用 D2")))
+    monkeypatch.setattr(
+        "knowledge_product_workflow.diagrams.resolve_diagram_browser",
+        lambda: type("Browser", (), {"available": True, "path": Path(r"C:\tools\chrome.exe")})(),
+    )
+    monkeypatch.setattr(
+        "knowledge_product_workflow.diagrams.render_svg_with_browser",
+        lambda _browser, _svg, pdf, png: (pdf.write_bytes(b"%PDF-diagram"), png.write_bytes(b"png")),
+    )
+    _, manifest = submit_diagram(workspace, 1, chapter, input_path)
+    assert manifest.renderer == "svg-template"
+    assert manifest.d2_sha256 is None
+    svg = workspace.root / "runs" / "diagrams" / "agent-layers.svg"
+    assert "#B65E2B" in svg.read_text(encoding="utf-8")
+    assert validate_current_diagram_assets(workspace, chapter, source.read_text(encoding="utf-8").strip() + "\n") == []
+    before_chapter = chapter.read_bytes()
+    preview_publication_update(
+        workspace,
+        PublicationUpdateInput(brand_color_intent="紫色基调", version_bump="none"),
+        language="zh-CN",
+    )
+    apply_publication_update(workspace, "用户")
+    assert refresh_diagram_theme(workspace) == ["agent-layers"]
+    assert "#6847A5" in svg.read_text(encoding="utf-8")
+    assert chapter.read_bytes() == before_chapter
+
+
+def test_v6_svg_template_real_browser_export_keeps_chinese_labels(tmp_path: Path) -> None:
+    if not resolve_diagram_browser().available:
+        pytest.skip("当前环境缺少离线图表浏览器")
+    workspace = _approved_workspace(tmp_path, v6=True)
+    source, input_path = _source_and_input(workspace)
+    pdf_path, manifest = submit_diagram(workspace, 1, source, input_path)
+    assert manifest.renderer == "svg-template"
+    assert (workspace.root / "assets" / "figures" / "agent-layers.png").stat().st_size > 0
+    text = "".join(page.extract_text() for page in PdfReader(pdf_path).pages)
+    assert "应用层" in text and "治理层" in text
 
 
 def test_diagram_submission_refuses_missing_d2_without_ascii_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -385,3 +463,55 @@ def test_real_d2_renders_a_bound_pdf_asset_when_d2_is_available(tmp_path: Path) 
 
     assert asset.read_bytes().startswith(b"%PDF")
     assert manifest.d2_version == resolution.version
+
+
+def test_real_sequence_asset_preserves_request_return_and_followup_order(tmp_path: Path) -> None:
+    if not resolve_d2().available or not resolve_diagram_browser().available:
+        pytest.skip("真实时序验收需要已有D2及离线浏览器")
+    workspace = _approved_workspace(tmp_path, v6=True)
+    source = workspace.root / "runs" / "chapter-01-sequence.md"
+    source.write_text("# 1. 架构基础\n", encoding="utf-8")
+    labels = ["提出问题", "请求检索", "返回摘录", "给出草稿", "继续提问"]
+    paths = [("user", "agent"), ("agent", "retrieval"), ("retrieval", "agent"),
+             ("agent", "user"), ("user", "agent")]
+    data = {
+        "diagram_id": "retrieval-messages", "diagram_type": "sequence",
+        "direction": "down", "caption": "检索请求与返回",
+        "reader_conclusion": "返回草稿后的继续提问是新的请求。",
+        "nodes": [{"node_id": "user", "label": "用户"},
+                  {"node_id": "agent", "label": "主Agent"},
+                  {"node_id": "retrieval", "label": "检索服务"}],
+        "edges": [{"source": start, "target": end, "label": label}
+                  for (start, end), label in zip(paths, labels, strict=True)],
+    }
+    input_path = workspace.root / "runs" / "sequence.json"
+    input_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    insert_diagram_reference(workspace, 1, source, data["diagram_id"], input_path)
+    asset, manifest = submit_diagram(workspace, 1, source, input_path)
+    assert manifest.renderer == "d2"
+    assert "shape: sequence_diagram" in (workspace.root / "runs/diagrams/retrieval-messages.d2").read_text(encoding="utf-8")
+    text = "".join(page.extract_text() for page in PdfReader(asset).pages)
+    compact = "".join(text.split())
+    assert all(actor in compact for actor in ["用户", "主Agent", "检索服务"])
+    positions = [compact.index(label) for label in labels]
+    assert positions == sorted(positions)
+    assert validate_current_diagram_assets(workspace, source, source.read_text(encoding="utf-8")) == []
+
+
+def test_presented_overview_only_renders_declared_node_text() -> None:
+    labels = ["接收\n问题与参数", "定位\n词集合匹配", "核对\n保留缺项", "草稿\n交接待核"]
+    spec = DiagramSpec.model_validate({
+        "diagram_id": "processing-overview", "chapter_number": 1,
+        "chapter_body_sha256": "a" * 64, "contract_sha256": "b" * 64,
+        "diagram_type": "stage_flow", "caption": "一次检索的内部阶段",
+        "reader_conclusion": "阶段各有职责，草稿仍待核对。",
+        "nodes": [{"node_id": f"stage{i}", "label": label}
+                  for i, label in enumerate(labels)],
+        "edges": [{"source": f"stage{i}", "target": f"stage{i+1}"} for i in range(3)],
+        "presentation": {"scheme": "warm-focus", "group_colors": {}, "concept_nodes": {}, "node_colors": {
+            "stage0": "peach", "stage1": "sand", "stage2": "rose", "stage3": "stone"}},
+    })
+    xml = ET.fromstring(render_structured_svg(spec, PublicationPalette()))
+    texts = ["".join(element.itertext()) for element in xml.iter()
+             if element.tag.endswith("}text")]
+    assert texts == [line for label in labels for line in label.splitlines()]

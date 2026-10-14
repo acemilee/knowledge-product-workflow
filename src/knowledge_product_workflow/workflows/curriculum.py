@@ -8,7 +8,14 @@ from hashlib import sha256
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from knowledge_product_workflow.detail_constraints import (
     ChapterBudget,
@@ -18,6 +25,11 @@ from knowledge_product_workflow.detail_constraints import (
     allocate_budgets,
 )
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
+from knowledge_product_workflow.illustration_tasks import (
+    RELATION_FAMILIES,
+    IllustrationTask,
+    validate_task_set,
+)
 from knowledge_product_workflow.models import ArtifactMetadata, ArtifactStatus
 from knowledge_product_workflow.user_decisions import UserDecisionTarget, invalidate_user_decision
 from knowledge_product_workflow.workflows.product_brief import (
@@ -176,6 +188,15 @@ class SectionOutlineItem(BaseModel):
     title: str = Field(min_length=1)
     children: list["SectionOutlineItem"] = Field(default_factory=list)
 
+    @field_validator("number", mode="before")
+    @classmethod
+    def require_string_number(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError(  # noqa: TRY004 - Pydantic turns this input error into a validation error.
+                '小节编号 number 必须是字符串；YAML 请写 number: "1.1"，不能写未加引号的 1.1'
+            )
+        return value
+
 
 def _normalized_outline_title(title: str) -> str:
     return unicodedata.normalize("NFC", title).strip()
@@ -236,6 +257,45 @@ def curriculum_outline_schema() -> dict[str, object]:
             ProductMode.GENERAL.value: "通用知识教程",
             ProductMode.INTERVIEW.value: "面试指导产品；完整示范回答受配额限制",
         },
+        "claim_ids": {
+            "pattern": r"^claim-[a-z0-9][a-z0-9-]*$",
+            "unique": True,
+            "description": "事实声明标识须使用小写claim-前缀；实际来源核验另行提交。",
+        },
+        "illustration_tasks": {
+            "policy": "政策2须覆盖全部section_outline编号；政策1不接受新图任务。",
+            "item_schema": IllustrationTask.model_json_schema(),
+            "none_example": {
+                "section_id": "1.1",
+                "decision": "none",
+                "alternative_rationale": "本节用有序列表即可表达操作顺序，没有需要图形组织的关系。",
+            },
+            "relation_constraints": {
+                "applies_when": {"production": "create", "relation_kind": "declared"},
+                "families": {
+                    relation: {
+                        "diagram_type": family,
+                        "recommended_direction": direction,
+                        "allowed_directions": (
+                            [None, direction] if relation == "handoff" else [None, "right", "down"]
+                        ),
+                    }
+                    for relation, (family, direction) in RELATION_FAMILIES.items()
+                },
+                "direction_rule": (
+                    "recommended_direction是方向建议；只有handoff硬限为未填或right，"
+                    "其他关系允许未填、right或down。"
+                ),
+            },
+            "decision_rules": [
+                "none只填写section_id、decision和alternative_rationale，不声明task_id或图型。",
+                "required/useful须声明task_id、trigger、read_question、viewpoint和visual_gain。",
+                "create须声明diagram_type和placement；reference须声明reference_task_id。",
+                "production=create且声明relation_kind时，diagram_type须精确匹配relation_constraints；"
+                "未声明关系及none/reference/omit沿用原规则。",
+                "同节可有互补制作任务；none须独占本节，任务标识和制作视角不能重复。",
+            ],
+        },
     }
 
 
@@ -259,7 +319,22 @@ def _template_schema_comments() -> str:
         "# - 每章 weight 决定按教学权重的章节预算分配；Brief 只给页数时，CLI 会按页数估算字数额门。",
         "# - 本章 word 预算（word_min/word_target/word_max）由 CLI 按 weight 派生并写入章节合约，",
         "#   正文写作须对照该预算，避免交付阶段页数不达标。",
+        "# - claim_ids须为唯一的小写claim-标识，例如claim-skill-format。",
+        "# - 政策2的illustration_tasks必须覆盖section_outline的全部编号，包括不用图的小节。",
+        "#   不用图填写section_id、decision: none、alternative_rationale；不填写task_id或图型。",
+        "#   下方none仅是结构示例，须按实际教学问题逐节判断；完整字段见kp outline-schema。",
+        "# - production=create 且声明 relation_kind 时，diagram_type 必须匹配下列关系映射。",
+        "#   只有 handoff 的 direction 硬限为未填或 right；其他关系的方向只是建议，允许未填、right 或 down。",
+        "#   未声明关系及 none/reference/omit 沿用原规则，不自动补写或修改作者字段。",
     ]
+    illustration_schema = schema["illustration_tasks"]
+    assert isinstance(illustration_schema, dict)
+    relation_constraints = illustration_schema["relation_constraints"]
+    for relation, constraint in relation_constraints["families"].items():
+        lines.append(
+            f"#   {relation} -> diagram_type: {constraint['diagram_type']}；"
+            f"建议 direction: {constraint['recommended_direction']}"
+        )
     for archetype in ChapterArchetype:
         payload = archetypes[archetype.value]
         assert isinstance(payload, dict)
@@ -290,6 +365,16 @@ class BlueprintChapter(BaseModel):
     prohibited_units: list[str] = Field(default_factory=list)
     claim_ids: list[str] = Field(default_factory=list)
     section_outline: list[SectionOutlineItem] = Field(default_factory=list)
+    illustration_policy_revision: int = Field(default=1, ge=1, le=2)
+    illustration_tasks: list[IllustrationTask] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_fields(self, handler):
+        value = handler(self)
+        if self.illustration_policy_revision == 1:
+            value.pop("illustration_policy_revision", None)
+            value.pop("illustration_tasks", None)
+        return value
 
     @model_validator(mode="after")
     def validate_teaching_form(self) -> "BlueprintChapter":
@@ -328,6 +413,13 @@ class BlueprintChapter(BaseModel):
             raise ValueError("Claim 清单必须使用唯一的小写 claim- 标识")
         if self.section_outline:
             _validate_section_outline(self.chapter_number, self.section_outline)
+        if self.illustration_policy_revision == 2:
+            def numbers(items):
+                return {item.number for item in items} | set().union(
+                    *(numbers(item.children) for item in items)) if items else set()
+            validate_task_set(self.illustration_tasks, numbers(self.section_outline))
+        elif self.illustration_tasks:
+            raise ValueError("旧政策不接收新图任务；先受控采纳政策2")
         return self
 
 
@@ -345,9 +437,53 @@ class BlueprintSubmission(BaseModel):
     interview_answer_policy: InterviewAnswerPolicy | None = None
     scope_expansion_units: list[str] = Field(default_factory=list)
     chapters: list[BlueprintChapter] = Field(min_length=1)
+    illustration_policy_revision: int = Field(default=1, ge=1, le=2)
+
+    @model_validator(mode="before")
+    @classmethod
+    def propagate_illustration_policy(cls, value):
+        if isinstance(value, dict) and value.get("illustration_policy_revision") == 2:
+            value = dict(value)
+            if not isinstance(value.get("chapters"), list):
+                return value
+            if any(isinstance(chapter, dict) and chapter.get("illustration_policy_revision", 2) != 2
+                   for chapter in value["chapters"]):
+                raise ValueError("蓝图与章节插图政策不一致")
+            value["chapters"] = [dict(chapter, illustration_policy_revision=2)
+                                 if isinstance(chapter, dict) and "illustration_policy_revision" not in chapter
+                                 else chapter for chapter in value.get("chapters", [])]
+        return value
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_fields(self, handler):
+        value = handler(self)
+        if self.illustration_policy_revision == 1:
+            value.pop("illustration_policy_revision", None)
+        return value
 
     @model_validator(mode="after")
     def validate_chapters_and_mode(self) -> "BlueprintSubmission":
+        if any(chapter.illustration_policy_revision != self.illustration_policy_revision
+               for chapter in self.chapters):
+            raise ValueError("蓝图与章节插图政策版本必须一致")
+        if self.illustration_policy_revision == 2:
+            previous = set()
+            created = set()
+            views = set()
+            for chapter in self.chapters:
+                for task in chapter.illustration_tasks:
+                    if task.task_id and task.task_id in previous:
+                        raise ValueError("全书task_id不能重复")
+                    if task.production == "reference" and task.reference_task_id not in created:
+                        raise ValueError("只能指引回看此前已经规划的图任务")
+                    if task.production == "create":
+                        view = ("".join(task.read_question.split()), "".join(task.viewpoint.split()))
+                        if view in views:
+                            raise ValueError("全书同义图任务重复，优先引用已有图")
+                        views.add(view)
+                        created.add(task.task_id)
+                    if task.task_id:
+                        previous.add(task.task_id)
         numbers = [chapter.chapter_number for chapter in self.chapters]
         if len(numbers) != len(set(numbers)):
             raise ValueError("章节编号必须唯一")
@@ -714,16 +850,19 @@ def _write_curriculum_blueprint(
     if constraints is not None and submission.audience_level != constraints.audience_level:
         raise BlueprintSubmissionError("课程蓝图受众级别必须与已批准 Brief 一致")
     language = constraints.language if constraints is not None else "zh-CN"
-    chapter_specs = [
-        ChapterSpec(
-            chapter_number=chapter.chapter_number,
-            weight=chapter.weight,
-            rationale=chapter.rationale,
-            required_units=chapter.required_units,
-        )
-        for chapter in submission.chapters
-    ]
-    budgets = allocate_budgets(chapter_specs, constraints) if constraints is not None else []
+    try:
+        chapter_specs = [
+            ChapterSpec(
+                chapter_number=chapter.chapter_number,
+                weight=chapter.weight,
+                rationale=chapter.rationale,
+                required_units=chapter.required_units,
+            )
+            for chapter in submission.chapters
+        ]
+        budgets = allocate_budgets(chapter_specs, constraints) if constraints is not None else []
+    except ValueError as error:
+        raise BlueprintSubmissionError(f"BLUEPRINT_BUDGET_INVALID: 章节教学单元或篇幅预算无效：{error}") from error
     if (
         constraints is not None
         and constraints.word_min is None
@@ -749,6 +888,25 @@ def _write_curriculum_blueprint(
     )
     body = f"# {submission.topic}\n\n"
     body += _render_learning_path(submission, language)
+    if submission.illustration_policy_revision == 2:
+        from knowledge_product_workflow.illustration_budget import budget_path, load_image_budget
+        made = [(chapter.chapter_number, task) for chapter in submission.chapters
+                for task in chapter.illustration_tasks if task.production == "create"]
+        native = {task.task_id for _chapter, task in made if task.backend == "host-image"}
+        consumed = 0
+        remaining = 2 * len(native)
+        if budget_path(workspace).is_file():
+            from knowledge_product_workflow.illustration_budget import _sent
+            old = load_image_budget(workspace)
+            consumed = sum(_sent(slot) for slot in old.slots)
+            remaining = sum(max(0, 2 - sum(_sent(slot) for slot in old.slots
+                                           if slot.task_id == task_id or task_id in slot.diagram_ids))
+                            for task_id in native)
+        body += (f"\n## 插图任务与成本预估\n\n拟制作{len(made)}幅教学图，其中原生生图任务{len(native)}个；"
+                 f"已发送历史{consumed}次，当前可用尝试最多{remaining}次，拟冻结总发送上限{consumed + remaining}次。"
+                 "图数由读者任务推导，每任务最多两次，串行；资产与成页质量仍须实际核验，不设文本token额度门，实际图像token未知。\n\n")
+        for number, task in made:
+            body += f"- 第{number}章 {task.section_id}：{task.read_question}（{task.viewpoint}；{'AI插图' if task.backend == 'host-image' else '确定性图'}）。\n"
     body += "\n" + _render_submission_contract(submission, language)
     if budgets:
         body += _render_budgets(budgets, language)
@@ -815,8 +973,12 @@ def amend_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
     blueprint_metadata, _ = parse_markdown_artifact(output.read_text(encoding="utf-8"))
     if brief_metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("修订课程蓝图前必须先批准当前产品 Brief")
-    if blueprint_metadata.status is not ArtifactStatus.APPROVED:
-        raise CurriculumPrerequisiteError("当前课程蓝图尚未获得批准，不能创建修订")
+    if blueprint_metadata.status not in {ArtifactStatus.APPROVED, ArtifactStatus.READY_FOR_REVIEW}:
+        raise CurriculumPrerequisiteError("当前课程蓝图状态不允许创建修订")
+    if blueprint_metadata.status is ArtifactStatus.READY_FOR_REVIEW and any(
+        (workspace.root / "chapters").glob("chapter-*.md")
+    ):
+        raise CurriculumPrerequisiteError("待审批蓝图已被下游工件使用，不能替换初始草案")
     submission = _normalize_amendment_binding(
         _load_submission(input_path), brief_path, brief_metadata, brief_body
     )
@@ -857,6 +1019,7 @@ def amend_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
 
 def require_current_submitted_blueprint(
     workspace: Workspace,
+    *, require_approved: bool = True,
 ) -> tuple[Path, ArtifactMetadata, BlueprintSubmission]:
     """Return an approved blueprint only when it still binds the current approved Brief."""
     brief_path = workspace.root / "planning" / "product-brief.md"
@@ -869,7 +1032,7 @@ def require_current_submitted_blueprint(
     )
     if brief_metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("当前产品 Brief 尚未获得批准")
-    if blueprint_metadata.status is not ArtifactStatus.APPROVED:
+    if require_approved and blueprint_metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("当前课程蓝图尚未获得批准")
     submission = parse_blueprint_submission(blueprint_body)
     if submission is None:
@@ -916,6 +1079,7 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
     constraints = parse_detail_constraints(brief_body)
     payload = {
         "schema_version": 2,
+        "illustration_policy_revision": 2,
         "brief_sha256": _sha256_file(brief_path),
         "brief_content_sha256": brief_contract_fingerprints(brief_body)["content_contract_sha256"],
         "brief_version": metadata.version,
@@ -937,6 +1101,13 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
                 "optional_units": [],
                 "prohibited_units": [],
                 "claim_ids": [],
+                "illustration_tasks": [
+                    {
+                        "section_id": "<章节号.1>",
+                        "decision": "none",
+                        "alternative_rationale": "<说明本节为何不需要图以及采用的表达形式>",
+                    }
+                ],
                 "section_outline": [
                     {
                         "number": "<章节号.1>",

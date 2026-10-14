@@ -3,7 +3,7 @@ name: kp-practice-designer
 description: 为章节创建可执行练习、评分标准、示范答案和迁移任务。
 user-invocable: true
 metadata:
-  version: "1.2.0"
+  version: "1.3.4"
 ---
 
 # KP Practice Designer
@@ -24,7 +24,7 @@ metadata:
 
 ## v1.1 编排工作单
 
-先阅读 `../../references/orchestration-contract.md`。这是条件 Skill：只有章节合约声明练习需求时才调用。读取根编排器分配的当前章节工单，输出与该合约和章节版本绑定的建议；不直接提交章节、不调用质量门、不拥有正文租约，也不因“每章完整”而强行添加练习。
+先阅读 `references/orchestration-contract.md`。这是条件 Skill：只有章节合约声明练习需求时才调用。读取根编排器分配的当前章节工单，输出与该合约和章节版本绑定的建议；不直接提交章节、不调用质量门、不拥有正文租约，也不因“每章完整”而强行添加练习。
 
 ## 必要步骤与条件分支
 

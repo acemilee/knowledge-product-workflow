@@ -73,6 +73,45 @@ def _approved_v2_blueprint(workspace: Workspace, constraints: DetailConstraints)
     return brief
 
 
+def test_unapproved_blueprint_stale_after_brief_change_can_be_revised_without_approval(tmp_path):
+    workspace = Workspace.create(tmp_path, "draft-recovery")
+    brief = create_product_brief(workspace, "Agent 产品教程",
+                                 DetailConstraints(delivery_format="markdown", target_words=100),
+                                 target_audience="希望构建 Agent 产品的开发者")
+    _approve(brief)
+    from knowledge_product_workflow.workflows.product_brief import write_request_contract
+    write_request_contract(workspace, "Agent 产品教程", "希望构建 Agent 产品的开发者",
+                           DetailConstraints(delivery_format="markdown", target_words=100),
+                           {"target_words": "user"})
+    blueprint = submit_test_blueprint(workspace, brief, titles=("基础",))
+    original = blueprint.read_bytes()
+    runner = CliRunner()
+    change = workspace.root / "runs" / "change.json"
+    change.write_text(json.dumps({"target_audience": "需要上线 Agent 产品的技术负责人"}), encoding="utf-8")
+    result = runner.invoke(app, ["amend-brief", "--workspace", str(workspace.root), "--from", str(change)])
+    assert result.exit_code == 0, result.output
+    _approve_brief_amendment_decision(workspace)
+    result = runner.invoke(app, ["approve-brief-amendment", "--workspace", str(workspace.root)])
+    assert result.exit_code == 0, result.output
+    status = inspect_workflow(workspace)
+    assert status.stage == "blueprint_invalid"
+    assert status.next_actions[0].command == "amend-outline"
+    request_contract = yaml.safe_load((workspace.root / "runs/request-contract.yaml").read_text(encoding="utf-8"))
+    assert request_contract["target_audience"] == "需要上线 Agent 产品的技术负责人"
+    assert request_contract["requirements"]["target_words"]["source"] == "user"
+    assert (workspace.root / "planning/history/request-contract.v1.yaml").is_file()
+    source = workspace.root / "runs" / "test-blueprint.yaml"
+    payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    payload["target_audience"] = "需要上线 Agent 产品的技术负责人"
+    source.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
+    result = runner.invoke(app, ["amend-outline", "--workspace", str(workspace.root), "--from", str(source)])
+    assert result.exit_code == 0, result.output
+    assert (workspace.root / "planning/history/curriculum-blueprint.v1.md").read_bytes() == original
+    metadata, _ = parse_markdown_artifact(blueprint.read_text(encoding="utf-8"))
+    assert metadata.version == 2 and metadata.status is ArtifactStatus.READY_FOR_REVIEW
+    assert inspect_workflow(workspace).stage == "blueprint_awaiting_approval"
+
+
 def test_delivery_amendment_preserves_current_blueprint_and_contracts(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "guide")
     brief = _approved_v2_blueprint(
