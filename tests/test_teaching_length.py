@@ -12,6 +12,52 @@ from knowledge_product_workflow.workspace import Workspace
 from tests.blueprint_support import submit_test_blueprint
 
 
+@pytest.mark.parametrize(
+    ("changes", "fields"),
+    [
+        ({"brief_content_sha256": "a" * 63}, ["brief_content_sha256"]),
+        ({"recommended_min_pages": None, "recommended_max_pages": None},
+         ["recommended_min_pages", "recommended_max_pages"]),
+        ({"rationale": [919991]}, ["rationale.0"]),
+    ],
+)
+def test_length_submission_reports_field_locations_without_input_values(tmp_path, changes, fields):
+    import json
+
+    from typer.testing import CliRunner
+
+    from knowledge_product_workflow.cli import app
+    from knowledge_product_workflow.workflows.curriculum import (
+        create_teaching_length_recommendation_template,
+    )
+    from tests.test_outline_and_length_status import _approved_brief
+
+    workspace = Workspace.create(tmp_path, "guide")
+    _approved_brief(workspace)
+    template, _ = create_teaching_length_recommendation_template(workspace)
+    import yaml
+
+    payload = yaml.safe_load(template.read_text(encoding="utf-8"))
+    payload.update(recommended_min_pages=4, recommended_max_pages=8,
+                   rationale=["独立合成建议，仅核字段反馈，不代表教学质量通过。"])
+    payload.update(changes)
+    source = workspace.root / "runs/length-invalid.json"
+    source.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    before = source.read_bytes()
+    events = (workspace.root / "runs/events.jsonl").read_bytes()
+    result = CliRunner().invoke(app, ["submit-length-recommendation", "--workspace",
+                                     str(workspace.root), "--from", str(source)])
+    assert result.exit_code == 1, result.output
+    for field in fields:
+        assert field in result.output
+    assert "当前模板" in result.output
+    assert "919991" not in result.output
+    assert "a" * 63 not in result.output
+    assert source.read_bytes() == before
+    assert (workspace.root / "runs/events.jsonl").read_bytes() == events
+    assert not (workspace.root / "planning/teaching-length-recommendation.yaml").exists()
+
+
 def _approve(path: Path) -> None:
     metadata, body = parse_markdown_artifact(path.read_text(encoding="utf-8"))
     path.write_text(

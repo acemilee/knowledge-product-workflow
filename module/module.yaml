@@ -1,7 +1,7 @@
 code: kp
 name: Knowledge Product Workflow
 header: Knowledge Product Workflow Module
-module_version: 1.2.0
+module_version: 1.3.0
 skill_package:
   canonical_source: integrations/cc-switch
   manifest: integrations/cc-switch/manifest.json
@@ -46,3 +46,6 @@ agents:
   - code: kp-publisher
     title: Publisher
     description: Assembles Markdown, renders PDF, and records delivery checksums.
+  - code: kp-visual-reviewer
+    title: 视觉审阅者
+    description: 量测实际页面并记录版本绑定的视觉观察，最终用户判断独立留证。

@@ -13,6 +13,21 @@ from pydantic import BaseModel, Field
 
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
 from knowledge_product_workflow.models import ArtifactStatus
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import (
+    load_yaml as _v_load_yaml,
+)
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    read_bytes as _v_read_bytes,
+)
+from knowledge_product_workflow.verification_context import (
+    read_text as _v_read_text,
+)
+from knowledge_product_workflow.verification_context import (
+    write_text as _v_write_text,
+)
 from knowledge_product_workflow.workspace import Workspace
 
 
@@ -23,6 +38,7 @@ class UserDecisionTarget(StrEnum):
     BLUEPRINT = "blueprint"
     SAMPLE = "sample"
     BRIEF_AMENDMENT = "brief_amendment"
+    PDF = "pdf"
 
 
 class UserDecisionState(StrEnum):
@@ -53,6 +69,7 @@ class UserDecisionRecord(BaseModel):
     artifact_path: str
     artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_version: int = Field(ge=1)
+    publication_profile_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     requested_at: datetime
     displayed_at: datetime
     state: UserDecisionState = UserDecisionState.PENDING
@@ -65,6 +82,12 @@ class UserDecisionRecord(BaseModel):
     invalidated_at: datetime | None = None
     invalidated_reason: str | None = None
     provenance: str = "current"
+    sample_basis_sha256: str | None = None
+    carried_forward_from: str | None = None
+    requested_scope: list[str] = Field(default_factory=list)
+    confirmed_scope: list[str] = Field(default_factory=list)
+    decision_context_sha256: str | None = None
+    question: str | None = None
 
 
 class UserDecisionRequirement(BaseModel):
@@ -92,6 +115,7 @@ _TARGET_PATHS = {
     UserDecisionTarget.BLUEPRINT: Path("planning/curriculum-blueprint.md"),
     UserDecisionTarget.SAMPLE: Path("chapters/chapter-01.md"),
     UserDecisionTarget.BRIEF_AMENDMENT: Path("runs/brief-amendment-preview.json"),
+    UserDecisionTarget.PDF: Path("delivery/book.pdf"),
 }
 
 _PROMPTS = {
@@ -99,6 +123,7 @@ _PROMPTS = {
     UserDecisionTarget.BLUEPRINT: "请确认课程结构，或直接说明修改要求。",
     UserDecisionTarget.SAMPLE: "请确认是否按该样章方向继续生成全书，或直接说明修改要求。",
     UserDecisionTarget.BRIEF_AMENDMENT: "请确认 Brief 修改，或直接说明需要继续调整的内容。",
+    UserDecisionTarget.PDF: "请确认当前 PDF 的已展示范围。",
 }
 
 
@@ -129,17 +154,19 @@ def target_for_artifact(workspace: Workspace, artifact: Path) -> UserDecisionTar
 
 def managed_user_decisions(workspace: Workspace) -> bool:
     """Enable strict decision gates only after v1.1 orchestration is adopted."""
-    return (workspace.root / "runs" / "orchestration" / "state.json").is_file()
+    return _v_is_file(workspace.root / "runs" / "orchestration" / "state.json")
 
 
 def _artifact_snapshot(workspace: Workspace, target: UserDecisionTarget) -> tuple[str, str, int]:
     path = target_path(workspace, target)
-    if not path.is_file():
+    if not _v_is_file(path):
         raise FileNotFoundError(f"缺少待确认产物：{path.relative_to(workspace.root)}")
-    artifact_sha256 = sha256(path.read_bytes()).hexdigest()
-    if target is UserDecisionTarget.BRIEF_AMENDMENT:
+    artifact_sha256 = sha256(_v_read_bytes(path)).hexdigest()
+    if target is UserDecisionTarget.PDF:
+        version = 1  # PDF identity is its byte digest, not a fabricated document revision.
+    elif target is UserDecisionTarget.BRIEF_AMENDMENT:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(_v_read_text(path, encoding="utf-8"))
             prior_version = payload["prior_version"]
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise ValueError("Brief 修订预览格式无效") from error
@@ -147,44 +174,76 @@ def _artifact_snapshot(workspace: Workspace, target: UserDecisionTarget) -> tupl
             raise ValueError("Brief 修订预览缺少有效版本")
         version = prior_version + 1
     else:
-        metadata, _ = parse_markdown_artifact(path.read_text(encoding="utf-8"))
+        metadata, _ = parse_markdown_artifact(_v_read_text(path, encoding="utf-8"))
         version = metadata.version
     return str(path.relative_to(workspace.root)).replace("\\", "/"), artifact_sha256, version
 
 
 def _read_record(workspace: Workspace, target: UserDecisionTarget) -> UserDecisionRecord | None:
     path = _record_path(workspace, target)
-    if not path.is_file():
+    if not _v_is_file(path):
         return None
     try:
-        return UserDecisionRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        return UserDecisionRecord.model_validate_json(_v_read_text(path, encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ValueError(f"用户决定记录格式无效：{path.relative_to(workspace.root)}") from error
 
 
 def _write_record(workspace: Workspace, record: UserDecisionRecord) -> Path:
     output = _record_path(workspace, record.target)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(record.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    _v_mkdir(output.parent,parents=True,exist_ok=True)
+    _v_write_text(output, record.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return output
 
 
 def _archive_record(workspace: Workspace, record: UserDecisionRecord) -> Path:
     history = _history_root(workspace)
-    history.mkdir(parents=True, exist_ok=True)
+    _v_mkdir(history,parents=True,exist_ok=True)
     output = history / f"{record.target.value}-{record.decision_id}.json"
-    output.write_text(record.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    _v_write_text(output, record.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return output
 
 
+def _design_binding(workspace: Workspace, target: UserDecisionTarget) -> str | None:
+    if target not in {UserDecisionTarget.BRIEF, UserDecisionTarget.PDF}:
+        return None
+    path = workspace.root / "planning" / "publication-profile.yaml"
+    if not _v_is_file(path):
+        return None
+    raw = _v_load_yaml(_v_read_text(path, encoding="utf-8"))
+    return sha256(_v_read_bytes(path)).hexdigest() if isinstance(raw, dict) and raw.get("profile_id") == "knowledge-product-pdf-v6" else None
+
+
 def _matches_snapshot(
-    record: UserDecisionRecord, *, path: str, artifact_sha256: str, version: int
+    workspace: Workspace, record: UserDecisionRecord, *, path: str, artifact_sha256: str, version: int
 ) -> bool:
+    if record.target is UserDecisionTarget.PDF and record.decision_context_sha256 != _pdf_context(workspace)[0]:
+        return False
+    if record.target is UserDecisionTarget.SAMPLE and record.sample_basis_sha256 is not None:
+        from knowledge_product_workflow.change_impact import semantic_digest
+        return (record.artifact_path == path
+                and record.sample_basis_sha256 == semantic_digest(sample_approval_basis(workspace)))
     return (
         record.artifact_path == path
         and record.artifact_sha256 == artifact_sha256
         and record.artifact_version == version
+        and record.publication_profile_sha256 == _design_binding(workspace, record.target)
     )
+
+
+def pdf_requested_scopes(scopes: list[str] | None) -> list[str]:
+    requested = sorted(set(scopes or ['visual']))
+    if 'visual' not in requested or not set(requested) <= {'visual','content','manual_full_coverage','style_anchor'}:
+        raise ValueError('PDF确认范围无效；visual必需，完整覆盖须单独请求')
+    return requested
+
+
+def precheck_pdf_reply(workspace: Workspace, scopes: list[str] | None, response: str) -> None:
+    record = _read_record(workspace, UserDecisionTarget.PDF)
+    if record is None:
+        raise UserDecisionRequiredError('尚未展示当前产物，不能记录用户决定')
+    if not response.strip() or not set(scopes or ['visual']) <= set(record.requested_scope):
+        raise ValueError('确认范围超出已展示问题或回复为空；不扩大用户答复')
 
 
 def request_user_decision(
@@ -192,13 +251,18 @@ def request_user_decision(
     target: UserDecisionTarget,
     *,
     work_order_id: str | None = None,
+    scopes: list[str] | None = None,
 ) -> UserDecisionRecord:
     """Record that the current artifact was presented for a user decision."""
+    requested = pdf_requested_scopes(scopes) if target is UserDecisionTarget.PDF else []
+    if target is UserDecisionTarget.PDF:
+        from knowledge_product_workflow.delivery_preflight import require_delivery_preflight
+        require_delivery_preflight(workspace)
     path, artifact_sha256, version = _artifact_snapshot(workspace, target)
     existing = _read_record(workspace, target)
     if existing is not None and _matches_snapshot(
-        existing, path=path, artifact_sha256=artifact_sha256, version=version
-    ) and existing.state not in {UserDecisionState.INVALIDATED, UserDecisionState.CONSUMED}:
+        workspace, existing, path=path, artifact_sha256=artifact_sha256, version=version
+    ) and existing.requested_scope == requested and existing.state not in {UserDecisionState.INVALIDATED, UserDecisionState.CONSUMED}:
         return existing
     if existing is not None:
         if existing.state is not UserDecisionState.INVALIDATED:
@@ -217,10 +281,21 @@ def request_user_decision(
         artifact_path=path,
         artifact_sha256=artifact_sha256,
         artifact_version=version,
+        publication_profile_sha256=_design_binding(workspace, target),
         requested_at=now,
         displayed_at=now,
         work_order_id=work_order_id,
+        requested_scope=requested,
     )
+    if target is UserDecisionTarget.PDF:
+        context, count = _pdf_context(workspace)
+        record.decision_context_sha256 = context
+        labels = {'visual':'视觉效果','content':'内容','manual_full_coverage':'本人完整检查全部页面','style_anchor':'母版风格'}
+        record.question = (f'请核对当前PDF（共{count}页）。确认范围：' + '、'.join(labels[s] for s in requested) +
+            ('；请只在你本人已直接完整检查全部页面后确认完整覆盖。' if 'manual_full_coverage' in requested else '；一般批准不包含本人完整全页覆盖。'))
+    from knowledge_product_workflow.change_impact import binding_policy_revision, semantic_digest
+    if target is UserDecisionTarget.SAMPLE and binding_policy_revision(workspace) == 2:
+        record.sample_basis_sha256 = semantic_digest(sample_approval_basis(workspace))
     _write_record(workspace, record)
     workspace.append_event(
         "user_decision_requested",
@@ -237,13 +312,17 @@ def record_user_decision(
     approved_by: str,
     response: str,
     feedback_summary: str | None = None,
+    confirmed_scope: list[str] | None = None,
 ) -> UserDecisionRecord:
     """Persist the host-interpreted user response without retaining its raw text."""
     record = _read_record(workspace, target)
     if record is None:
         raise UserDecisionRequiredError("尚未展示当前产物，不能记录用户决定")
+    scopes = sorted(set(confirmed_scope or ['visual'])) if target is UserDecisionTarget.PDF else []
+    if target is UserDecisionTarget.PDF and not set(scopes) <= set(record.requested_scope):
+        raise ValueError('确认范围超出已展示问题；重新展示明确范围，不扩大用户答复')
     path, artifact_sha256, version = _artifact_snapshot(workspace, target)
-    if not _matches_snapshot(record, path=path, artifact_sha256=artifact_sha256, version=version):
+    if not _matches_snapshot(workspace, record, path=path, artifact_sha256=artifact_sha256, version=version):
         raise UserDecisionStaleError("内容已更新，请确认最新版本")
     if record.state is UserDecisionState.CONSUMED:
         raise UserDecisionRequiredError("当前用户决定已被消费；请等待新的待确认产物")
@@ -265,6 +344,7 @@ def record_user_decision(
             "approved_by": approved_by.strip(),
             "response_sha256": sha256(response_value.encode("utf-8")).hexdigest(),
             "feedback_summary": feedback_summary.strip() if feedback_summary else None,
+            "confirmed_scope": scopes,
         }
     )
     _write_record(workspace, resolved)
@@ -275,13 +355,45 @@ def record_user_decision(
     return resolved
 
 
+def _pdf_context(workspace: Workspace) -> tuple[str, int]:
+    from knowledge_product_workflow.pdf_preview import current_pdf_preview
+    from knowledge_product_workflow.visual_audit import audit_path, current_visual_audit
+    pdf = workspace.root / 'delivery/book.pdf'
+    preview = current_pdf_preview(pdf, workspace.root / 'runs/pdf-preview')
+    audit = current_visual_audit(workspace)
+    if preview is None or audit is None:
+        raise ValueError('PDF决定需要当前完整预览与视觉报告')
+    paths = [pdf, preview[0], audit_path(workspace), workspace.root/'planning/publication-profile.yaml']
+    values = [(str(p.relative_to(workspace.root)), sha256(_v_read_bytes(p)).hexdigest()) for p in paths]
+    return sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest(), audit.page_count
+
+
+def require_pdf_scope(workspace: Workspace, scopes: set[str]) -> UserDecisionRecord:
+    record = require_approved_user_decision(workspace, UserDecisionTarget.PDF)
+    if not scopes <= set(record.confirmed_scope):
+        raise UserDecisionRequiredError('当前PDF用户决定未明确包含所请求范围：' + '、'.join(sorted(scopes)))
+    return record
+
+
+def precheck_pdf_scope(workspace: Workspace, scopes: set[str], response: str | None = None) -> None:
+    """Cheap rejection only; never replaces current artifact/permission checks."""
+    record = _read_record(workspace, UserDecisionTarget.PDF)
+    if record is None or record.state is not UserDecisionState.APPROVED:
+        raise UserDecisionRequiredError('缺少当前PDF已批准决定；先request-user-decision pdf展示范围，再record-user-decision pdf记录实际答复')
+    if not scopes <= set(record.confirmed_scope):
+        raise UserDecisionRequiredError('PDF实际确认scope缺少：' + '、'.join(sorted(scopes-set(record.confirmed_scope)))
+            + '；不能扩展一般回复，读取当前请求范围与用户原话')
+    if response is not None and sha256(response.strip().encode()).hexdigest() != record.response_sha256:
+        raise ValueError('PDF确认原话与已登记用户决定不一致')
+
+
 def require_approved_user_decision(workspace: Workspace, target: UserDecisionTarget) -> UserDecisionRecord:
     """Return the current approval decision or stop a protected transition."""
     record = _read_record(workspace, target)
     if record is None:
         raise UserDecisionRequiredError("尚未收到当前版本的用户确认")
     path, artifact_sha256, version = _artifact_snapshot(workspace, target)
-    if not _matches_snapshot(record, path=path, artifact_sha256=artifact_sha256, version=version):
+    if not _matches_snapshot(workspace, record, path=path, artifact_sha256=artifact_sha256, version=version):
         raise UserDecisionStaleError("内容已更新，请确认最新版本")
     if record.state is UserDecisionState.INVALIDATED:
         raise UserDecisionStaleError("内容已更新，请确认最新版本")
@@ -338,15 +450,79 @@ def invalidate_user_decision(
     return invalidated
 
 
+def prepare_decision_invalidation(workspace: Workspace, target: UserDecisionTarget, *,
+                                  reason: str, include_consumed: bool = False) -> tuple[dict, list]:
+    """Compute a decision change for the caller's file transaction; never signs approval."""
+    record = _read_record(workspace, target)
+    if record is None:
+        if _v_exists(_record_path(workspace, target)):
+            raise UserDecisionStaleError("人工决定记录损坏，不能按缺失处理")
+        return {}, []
+    if record.state is UserDecisionState.INVALIDATED or (
+            record.state is UserDecisionState.CONSUMED and not include_consumed):
+        return {}, []
+    invalidated = record.model_copy(update={"state": UserDecisionState.INVALIDATED,
+        "invalidated_at": datetime.now(UTC), "invalidated_reason": reason})
+    relative = _record_path(workspace, target).relative_to(workspace.root).as_posix()
+    return {relative: (invalidated.model_dump_json(indent=2) + "\n").encode("utf-8")}, [
+        ("user_decision_invalidated", {"target": target.value,
+         "decision_id": record.decision_id, "reason": reason})]
+
+
+def sample_approval_basis(workspace: Workspace, *, body_override: str | None = None) -> dict:
+    from knowledge_product_workflow.change_impact import chapter_bindings
+    from knowledge_product_workflow.diagrams import diagram_semantics_digest
+    path = workspace.root / "chapters/chapter-01.md"
+    metadata, body = parse_markdown_artifact(_v_read_text(path, encoding="utf-8"))
+    reader = (body_override if body_override is not None else body).strip() + "\n"
+    return {"book_id": metadata.book_id, "reader_body_sha256": sha256(reader.encode("utf-8")).hexdigest(),
+        "requirements": chapter_bindings(workspace, 1).semantic_values(),
+        "diagram_semantics": diagram_semantics_digest(workspace, reader)}
+
+
+def sample_approval_is_current(workspace: Workspace, *, body_override: str | None = None) -> bool:
+    from knowledge_product_workflow.change_impact import binding_policy_revision, semantic_digest
+    marker = workspace.root / "chapters/chapter-01-sample.approved"
+    if not _v_is_file(marker):
+        return False
+    if binding_policy_revision(workspace) == 1:
+        return True
+    try:
+        saved = json.loads(_v_read_text(marker, encoding="utf-8"))
+        record = _read_record(workspace, UserDecisionTarget.SAMPLE)
+        if managed_user_decisions(workspace) and (record is None or record.state not in {
+                UserDecisionState.APPROVED, UserDecisionState.CONSUMED}):
+            return False
+        return (saved["basis_sha256"] == semantic_digest(sample_approval_basis(workspace, body_override=body_override))
+                and (record is None or saved.get("decision_id") == record.decision_id))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def carry_sample_approval(workspace: Workspace, *, impact_id: str) -> Path:
+    # U08: no restoration of a revoked/unknown decision, even with a matching body.
+    if not sample_approval_is_current(workspace):
+        raise UserDecisionStaleError("旧样章批准不可自动恢复；请走原人工决定")
+    return workspace.root / "chapters/chapter-01-sample.approved"
+
+
+def prepare_decision_consumption(workspace: Workspace, target: UserDecisionTarget) -> tuple[dict, list]:
+    record = require_approved_user_decision(workspace, target)
+    consumed = record.model_copy(update={"state": UserDecisionState.CONSUMED, "consumed_at": datetime.now(UTC)})
+    relative = _record_path(workspace, target).relative_to(workspace.root).as_posix()
+    return {relative: (consumed.model_dump_json(indent=2) + "\n").encode("utf-8")}, [
+        ("user_decision_consumed", {"target": target.value, "decision_id": record.decision_id})]
+
+
 def import_legacy_approval_records(workspace: Workspace) -> list[UserDecisionRecord]:
     """Import existing approval facts without asking legacy users to repeat them."""
     imported: list[UserDecisionRecord] = []
     for target in (UserDecisionTarget.BRIEF, UserDecisionTarget.BLUEPRINT):
         path = target_path(workspace, target)
-        if not path.is_file() or _read_record(workspace, target) is not None:
+        if not _v_is_file(path) or _read_record(workspace, target) is not None:
             continue
         try:
-            metadata, _ = parse_markdown_artifact(path.read_text(encoding="utf-8"))
+            metadata, _ = parse_markdown_artifact(_v_read_text(path, encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if metadata.status is not ArtifactStatus.APPROVED:
@@ -371,13 +547,13 @@ def import_legacy_approval_records(workspace: Workspace) -> list[UserDecisionRec
         imported.append(record)
 
     sample_marker = workspace.root / "chapters" / "chapter-01-sample.approved"
-    if sample_marker.is_file() and _read_record(workspace, UserDecisionTarget.SAMPLE) is None:
+    if _v_is_file(sample_marker) and _read_record(workspace, UserDecisionTarget.SAMPLE) is None:
         try:
             artifact_path, artifact_sha256, version = _artifact_snapshot(workspace, UserDecisionTarget.SAMPLE)
         except (FileNotFoundError, ValueError):
             return imported
         approved_by = "legacy_import"
-        for line in sample_marker.read_text(encoding="utf-8").splitlines():
+        for line in _v_read_text(sample_marker, encoding="utf-8").splitlines():
             if line.startswith("approved_by:") and line.partition(":")[2].strip():
                 approved_by = line.partition(":")[2].strip()
                 break
@@ -423,7 +599,7 @@ def user_decision_requirement(
         # Approval changes the artifact frontmatter SHA but not its reviewed version.
         state = UserDecisionState.CONSUMED.value
         decision_id = record.decision_id
-    elif not _matches_snapshot(record, path=path, artifact_sha256=artifact_sha256, version=version):
+    elif not _matches_snapshot(workspace, record, path=path, artifact_sha256=artifact_sha256, version=version):
         state = "stale"
         decision_id = record.decision_id
     else:

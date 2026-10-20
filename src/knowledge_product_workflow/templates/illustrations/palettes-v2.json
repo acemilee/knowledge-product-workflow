@@ -1,0 +1,34 @@
+{
+  "revision": 2,
+  "colors": {
+    "peach": "F8E5D8",
+    "sand": "FFF4DE",
+    "rose": "F3E5E8",
+    "sage": "E7F0E4",
+    "blue": "E4EDF5",
+    "lavender": "ECE6F3",
+    "stone": "ECEBE8"
+  },
+  "schemes": {
+    "warm-focus": [
+      "peach",
+      "rose",
+      "sand",
+      "stone"
+    ],
+    "balanced": [
+      "blue",
+      "lavender",
+      "peach",
+      "rose",
+      "sage",
+      "sand",
+      "stone"
+    ],
+    "cool-structure": [
+      "blue",
+      "lavender",
+      "stone"
+    ]
+  }
+}

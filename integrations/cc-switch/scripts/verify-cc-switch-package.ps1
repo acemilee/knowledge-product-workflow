@@ -1,10 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$PackageRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$PackageRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
+    $PackageRoot = Split-Path -Parent $PSScriptRoot
+}
 $manifestPath = Join-Path $PackageRoot 'manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "Missing package manifest: $manifestPath"
@@ -34,9 +37,13 @@ foreach ($resource in $sharedResources) {
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
         # Hash canonical UTF-8/LF bytes so the manifest is stable across Windows and Unix checkouts.
-        $content = [System.IO.File]::ReadAllText($resourcePath, [System.Text.Encoding]::UTF8)
-        $canonical = $content.Replace("`r`n", "`n").Replace("`r", "`n")
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        if ([System.IO.Path]::GetExtension($resourcePath) -eq '.png') {
+            $bytes = [System.IO.File]::ReadAllBytes($resourcePath)
+        } else {
+            $content = [System.IO.File]::ReadAllText($resourcePath, [System.Text.Encoding]::UTF8)
+            $canonical = $content.Replace("`r`n", "`n").Replace("`r", "`n")
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        }
         $actualHash = ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
     } finally {
         $sha256.Dispose()
@@ -60,10 +67,41 @@ foreach ($skill in @($manifest.skills)) {
     if ($content -notmatch "(?m)^name:\s*$([regex]::Escape($name))\s*$") {
         throw "Skill frontmatter name mismatch: $skillPath"
     }
+    if ($content -notmatch ('(?m)^\s+version:\s*"' + [regex]::Escape([string]$manifest.version) + '"\s*$')) {
+        throw "Skill version mismatch: $name"
+    }
+    if (@($skill.resources).Count -eq 0) {
+        throw "Skill must include independent resources: $name"
+    }
+    foreach ($resource in @($skill.resources)) {
+        $relativePath = [string]$resource.path
+        if ($relativePath -match '(^|[\\/])\.\.([\\/]|$)' -or [System.IO.Path]::IsPathRooted($relativePath)) {
+            throw "Invalid Skill resource path: $name -> $relativePath"
+        }
+        $resourcePath = Join-Path (Split-Path -Parent $skillPath) $relativePath
+        if (-not (Test-Path -LiteralPath $resourcePath -PathType Leaf)) {
+            throw "Missing Skill resource: $name -> $relativePath"
+        }
+        if ([System.IO.Path]::GetExtension($resourcePath) -eq '.png') {
+            $contentBytes = [System.IO.File]::ReadAllBytes($resourcePath)
+        } else {
+            $contentBytes = [System.Text.Encoding]::UTF8.GetBytes(([System.IO.File]::ReadAllText($resourcePath, [System.Text.Encoding]::UTF8)).Replace("`r`n", "`n").Replace("`r", "`n"))
+        }
+        $hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $resourceHash = ([System.BitConverter]::ToString($hasher.ComputeHash($contentBytes))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $hasher.Dispose()
+        }
+        $declaredResource = @($manifest.shared_resources | Where-Object { $_.path -eq $relativePath })
+        if ($declaredResource.Count -ne 1 -or $resourceHash -ne [string]$resource.sha256 -or $resourceHash -ne [string]$declaredResource[0].sha256) {
+            throw "Skill resource hash mismatch: $name -> $relativePath"
+        }
+    }
     if ([regex]::Matches($content, '(?m)^##\s+').Count -lt 6) {
         throw "Skill contract is incomplete: $skillPath"
     }
-    foreach ($match in [regex]::Matches($content, '`(?<relative>(?:\.\./)+references/[^`]+)`')) {
+    foreach ($match in [regex]::Matches($content, '`(?<relative>(?:\.\./)*references/[^`]+)`')) {
         $relativeReference = $match.Groups['relative'].Value
         $referencePath = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $skillPath) $relativeReference))
         if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) {

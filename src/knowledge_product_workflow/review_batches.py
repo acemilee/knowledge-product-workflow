@@ -7,6 +7,7 @@ import hmac
 import json
 import secrets
 import shutil
+import time
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -19,6 +20,12 @@ from pydantic import BaseModel, Field, ValidationError
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
 from knowledge_product_workflow.quality import QualityFinding, Severity
 from knowledge_product_workflow.review import ReviewIssue, ReviewScore, ReviewStatus, UnitEvidence
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    write_text as _v_write_text,
+)
 from knowledge_product_workflow.workspace import Workspace
 
 
@@ -58,6 +65,14 @@ class BatchReviewTarget(BaseModel):
     chapter_version: int = Field(ge=1)
     author_identity: str = Field(min_length=1)
     author_session_id: str = Field(min_length=1)
+
+
+class CandidateReviewTarget(BatchReviewTarget):
+    """Private candidate target; never silently reinterpret it as a formal chapter."""
+    candidate_task_id: str
+    candidate_version: int = Field(ge=1)
+    candidate_input_manifest_sha256: str
+    candidate_context_path: str
 
 
 class HostCapabilities(BaseModel):
@@ -242,7 +257,7 @@ def _batch_json_path(workspace: Workspace, batch_id: str) -> Path:
 
 
 def _write_batch(workspace: Workspace, batch: ReviewBatch) -> None:
-    _batch_json_path(workspace, batch.batch_id).write_text(
+    _v_write_text(_batch_json_path(workspace, batch.batch_id),
         batch.model_dump_json(indent=2), encoding="utf-8"
     )
 
@@ -273,9 +288,9 @@ def _current_target(
     workspace: Workspace, chapter_number: int, author_identity: str, author_session_id: str
 ) -> BatchReviewTarget:
     chapter_path, contract_path = _chapter_paths(workspace, chapter_number)
-    if not chapter_path.is_file():
+    if not _v_is_file(chapter_path):
         raise FileNotFoundError(f"缺少章节正文：{chapter_path}")
-    if not contract_path.is_file():
+    if not _v_is_file(contract_path):
         raise FileNotFoundError(f"缺少章节合约：{contract_path}")
     metadata, body = parse_markdown_artifact(chapter_path.read_text(encoding="utf-8"))
     contract = contract_path.read_text(encoding="utf-8")
@@ -300,7 +315,7 @@ def _same_revision(left: BatchReviewTarget, right: BatchReviewTarget) -> bool:
 
 
 def _required_units(contract_path: Path) -> list[str]:
-    if not contract_path.is_file():
+    if not _v_is_file(contract_path):
         return []
     text = contract_path.read_text(encoding="utf-8")
     markers = ("## 章节预算", "## Detail budgets")
@@ -345,6 +360,7 @@ def _has_current_passing_review(workspace: Workspace, chapter_number: int) -> bo
                 and review.status is ReviewStatus.PASSED
                 and task.state is ReviewTaskState.COMPLETED
                 and _same_revision(task.target, current)
+                and _converted_candidate_is_current(workspace,batch,task)
             ):
                 return True
     return False
@@ -396,10 +412,10 @@ def _snapshot_batch(
 ) -> ReviewBatch:
     batch_id = _batch_id()
     root = _batch_root(workspace)
-    root.mkdir(parents=True, exist_ok=True)
+    _v_mkdir(root,parents=True,exist_ok=True)
     temporary = root / f".{batch_id}.tmp-{secrets.token_hex(4)}"
     final = root / batch_id
-    temporary.mkdir(parents=False)
+    _v_mkdir(temporary,parents=False)
     try:
         targets = [
             _current_target(workspace, number, author_identity, author_session_id)
@@ -411,14 +427,14 @@ def _snapshot_batch(
             "evidence_files": [
                 name
                 for name in ("source-ledger.jsonl", "assumption-ledger.jsonl")
-                if (workspace.root / "research" / name).is_file()
+                if _v_is_file(workspace.root / "research" / name)
             ],
         }
         manifest_hash = _sha256_json(manifest_payload)
         tasks: list[ReviewTask] = []
         for target in targets:
             chapter_dir = temporary / "chapters" / f"chapter-{target.chapter_number:02d}"
-            chapter_dir.mkdir(parents=True)
+            _v_mkdir(chapter_dir,parents=True)
             chapter_path, contract_path = _chapter_paths(workspace, target.chapter_number)
             shutil.copyfile(chapter_path, chapter_dir / "chapter.md")
             shutil.copyfile(contract_path, chapter_dir / "contract.md")
@@ -426,7 +442,7 @@ def _snapshot_batch(
                 {"batch_manifest_sha256": manifest_hash, "target": target.model_dump(mode="json")}
             )
             work_order_path = temporary / "work-orders" / f"chapter-{target.chapter_number:02d}.json"
-            work_order_path.parent.mkdir(exist_ok=True)
+            _v_mkdir(work_order_path.parent,exist_ok=True)
             task = ReviewTask(
                 chapter_number=target.chapter_number,
                 task_token=secrets.token_urlsafe(32),
@@ -436,7 +452,7 @@ def _snapshot_batch(
                 task_input_manifest_sha256=task_manifest_hash,
             )
             tasks.append(task)
-            work_order_path.write_text(
+            _v_write_text(work_order_path,
                 json.dumps(
                     {
                         "batch_id": batch_id,
@@ -456,7 +472,7 @@ def _snapshot_batch(
                 encoding="utf-8",
             )
         evidence = temporary / "evidence"
-        evidence.mkdir()
+        _v_mkdir(evidence)
         for filename in manifest_payload["evidence_files"]:
             shutil.copyfile(workspace.root / "research" / filename, evidence / filename)
         capabilities = dispatcher.probe()
@@ -474,15 +490,23 @@ def _snapshot_batch(
             input_manifest_sha256=manifest_hash,
             tasks=tasks,
         )
-        (temporary / "manifest.json").write_text(
+        _v_write_text(temporary / "manifest.json",
             json.dumps(manifest_payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
         )
-        (temporary / "batch.json").write_text(batch.model_dump_json(indent=2), encoding="utf-8")
-        (temporary / "reviews").mkdir()
-        temporary.rename(final)
+        _v_write_text(temporary / "batch.json", batch.model_dump_json(indent=2), encoding="utf-8")
+        _v_mkdir(temporary / "reviews")
+        for attempt in range(3):
+            try:
+                temporary.rename(final)
+                break
+            except PermissionError as error:
+                if attempt == 2:
+                    raise PermissionError(f"审稿批次暂存目录提交在三次短重试后仍被拒绝：{temporary} -> {final}") from error
+                workspace.append_event("review_batch_commit_retry", {"attempt": attempt + 1, "reason": str(error)})
+                time.sleep(0.1 * (attempt + 1))
         return batch
     except Exception:
-        if temporary.exists():
+        if _v_exists(temporary):
             shutil.rmtree(temporary)
         raise
 
@@ -621,9 +645,9 @@ def submit_review_result(
         revision_requests=result.revision_requests,
     )
     output = _review_output_path(workspace, batch_id, task.chapter_number)
-    if output.exists():
+    if _v_exists(output):
         raise ValueError("该审稿任务已提交结果，不能覆盖")
-    output.write_text(review.model_dump_json(indent=2), encoding="utf-8")
+    _v_write_text(output, review.model_dump_json(indent=2), encoding="utf-8")
     task.state = ReviewTaskState.COMPLETED
     task.result_path = _relative(workspace, output)
     if all(item.state is ReviewTaskState.COMPLETED for item in batch.tasks):
@@ -638,6 +662,8 @@ def submit_review_result(
             "task_id": receipt.task_id if receipt is not None else None,
         },
     )
+    from knowledge_product_workflow.production_dependencies import finalize_serial_exports
+    finalize_serial_exports(workspace, chapter_number=task.chapter_number)
     return output
 
 
@@ -654,17 +680,22 @@ def _current_batch_for_chapter(workspace: Workspace, chapter_number: int) -> tup
     return candidates[-1] if candidates else None
 
 
-def validate_review_batches(workspace: Workspace) -> list[QualityFinding]:
+def validate_review_batches(workspace: Workspace, *, chapter_numbers: set[int] | None = None) -> list[QualityFinding]:
     """Validate batch/task receipts, immutable revision binding and rubric gates."""
     findings: list[QualityFinding] = []
     for chapter_path in sorted((workspace.root / "chapters").glob("chapter-[0-9][0-9].md")):
         chapter_number = int(chapter_path.stem.split("-")[1])
+        if chapter_numbers is not None and chapter_number not in chapter_numbers:
+            continue
         location = f"chapters/chapter-{chapter_number:02d}.md"
         current_pair = _current_batch_for_chapter(workspace, chapter_number)
         if current_pair is None:
             findings.append(_finding("REVIEW_BATCH_MISSING", location, "本章尚未进入原子化独立审稿批次。"))
             continue
         batch, task = current_pair
+        if not _converted_candidate_is_current(workspace,batch,task):
+            findings.append(_finding("REVIEW_CONVERSION_STALE",location,"候选转换／提交或原始证明不完整、已过期。"))
+            continue
         try:
             current = _current_target(
                 workspace, chapter_number, task.target.author_identity, task.target.author_session_id
@@ -774,3 +805,203 @@ def review_batch_proofs(workspace: Workspace) -> list[dict[str, object]]:
                 }
             )
     return proofs
+
+
+def _converted_candidate_is_current(workspace, batch, task) -> bool:
+    if batch.dispatcher_kind!="codex-native-candidate":
+        return True
+    from knowledge_product_workflow.production_context import (
+        CandidateEvaluationContext,
+        CandidateProofSet,
+        verify_candidate_proofs,
+    )
+    from knowledge_product_workflow.production_dependencies import (
+        binding_digest,
+        file_digest,
+        workspace_file,
+    )
+    try:
+        path=_batch_path(workspace,batch.batch_id)/"conversion.json"
+        conversion=json.loads(path.read_text(encoding="utf-8"))
+        commit=json.loads(workspace_file(workspace,"runs/production/commits/"+conversion["commit_id"]+".json").read_text(encoding="utf-8"))
+        if commit["state"]!="completed" or commit.get("diagnostic_only") or conversion["diagnostic_only"]:
+            return False
+        for relative,item in commit["outputs"].items():
+            if file_digest(workspace_file(workspace,relative))!=item["sha256"]:
+                return False
+        if commit["outputs"][_relative(workspace,path)]["sha256"]!=file_digest(path):
+            return False
+        context_path=workspace_file(workspace,conversion["context_path"])
+        if file_digest(context_path)!=conversion["context_sha256"]:
+            return False
+        context=CandidateEvaluationContext.model_validate_json(context_path.read_text(encoding="utf-8"))
+        if Path(context.canonical_root).resolve()!=workspace.root.resolve():
+            return False
+        context.verify()
+        proof_path=Path(context.private_result_root)/"proofs.json"
+        if file_digest(proof_path)!=conversion["proof_sha256"]:
+            return False
+        proof=CandidateProofSet.model_validate_json(proof_path.read_text(encoding="utf-8"))
+        verify_candidate_proofs(context,proof)
+        if proof.diagnostic_only or proof.required_missing:
+            return False
+        original=json.loads(Path(proof.reports["candidate_review"]).read_text(encoding="utf-8"))
+        if original["diagnostic_only"] or not original["acceptance_ready"] or original["result"]!=conversion["original_result"]:
+            return False
+        for key,expected in context.live_bindings.items():
+            if key in commit["outputs"]:
+                continue  # Exact committed output was checked above, rather than its superseded input.
+            if binding_digest(workspace,key)!=expected:
+                return False
+        return bool(conversion["formal_target"]==task.target.model_dump(mode="json")
+            and conversion["native_task_id"]==task.receipt.task_id
+            and conversion["native_parent_id"]==task.receipt.parent_task_id
+            and conversion["native_manifest"]==task.task_input_manifest_sha256)
+    except (OSError,ValueError,KeyError,TypeError,AttributeError):
+        return False
+
+
+def materialize_candidate_review_batch(private, context, writer, reviewer, *, commit_id: str,
+                                       capabilities, diagnostic_only: bool = False) -> list[str]:
+    """Map an equal reader body into the original batch schema, retaining all original evidence."""
+    from knowledge_product_workflow.chapter_compliance import _reader_body_from_source
+    from knowledge_product_workflow.production_context import (
+        CandidateProofSet,
+        verify_candidate_proofs,
+    )
+    from knowledge_product_workflow.production_dependencies import file_digest
+    context.verify()
+    proof_path=Path(context.private_result_root)/"proofs.json"
+    proof=CandidateProofSet.model_validate_json(proof_path.read_text(encoding="utf-8"))
+    verify_candidate_proofs(context,proof)
+    if not private.root.resolve().is_relative_to(Path(context.private_result_root).resolve()):
+        raise ValueError("物化输入不属于当前候选私有目录")
+    mutable={f"chapters/chapter-{context.chapter_number:02d}.md","runs/events.jsonl"}
+    for relative,expected in proof.private_input_bindings.items():
+        if relative in mutable:
+            continue
+        path=(private.root/relative).resolve()
+        if (not path.is_relative_to(private.root.resolve()) or not _v_is_file(path)
+                or file_digest(path)!=expected):
+            raise ValueError("物化输入与已审候选不相等："+relative)
+    raw=json.loads(Path(proof.reports["candidate_review"]).read_text(encoding="utf-8"))
+    if not diagnostic_only and (not capabilities.admits_live_parallelism() or proof.diagnostic_only
+            or raw["diagnostic_only"] or not raw["acceptance_ready"] or proof.required_missing):
+        raise ValueError("候选缺真实资格或完整审稿证明，不能转换正式批次")
+    if not reviewer.host_task_id or not reviewer.host_parent_id or not reviewer.host_dispatched_at:
+        raise ValueError("候选转换缺原生回执身份／启动观察时间")
+    result=ReviewResultInput.model_validate(raw["result"])
+    if (writer.role!="writer" or reviewer.role!="reviewer" or raw["reviewer_task_id"]!=reviewer.task_id
+            or writer.task_id!=context.task_id or reviewer.candidate_version!=context.candidate_version
+            or reviewer.chapter_number!=context.chapter_number
+            or result.reviewer_session_id!=reviewer.host_task_id
+            or writer.host_task_id==reviewer.host_task_id):
+        raise ValueError("转换目标／原生作者审稿身份不一致")
+    target=_current_target(private,context.chapter_number,writer.task_id,writer.host_task_id or writer.task_id)
+    normalized=_reader_body_from_source(Path(context.snapshot_root)/context.source_relative).strip()+"\n"
+    if _sha256_text(normalized)!=target.chapter_sha256:
+        raise ValueError("正式读者正文与已审核候选不相等，不能改签旧审稿")
+    now=datetime.now(UTC)
+    batch_id="review-batch-"+now.strftime("%Y%m%dT%H%M%SZ")+"-"+hashlib.sha256(commit_id.encode()).hexdigest()[:8]
+    directory=_batch_path(private,batch_id)
+    _v_mkdir(directory/"reviews",parents=True,exist_ok=False)
+    receipt=TaskReceipt(task_id=reviewer.host_task_id,parent_task_id=reviewer.host_parent_id,
+        dispatched_at=reviewer.host_dispatched_at,task_input_manifest_sha256=reviewer.input_manifest_sha256)
+    task=ReviewTask(chapter_number=context.chapter_number,task_token=secrets.token_hex(24),target=target,
+        snapshot_directory=str(Path(context.snapshot_root).relative_to(Path(context.canonical_root)).as_posix()),
+        work_order_path=str((Path(context.snapshot_root).parent/"context.json").relative_to(Path(context.canonical_root)).as_posix()),
+        task_input_manifest_sha256=reviewer.input_manifest_sha256,state=ReviewTaskState.COMPLETED,receipt=receipt,
+        result_path=_relative(private,_review_output_path(private,batch_id,context.chapter_number)))
+    batch=ReviewBatch(batch_id=batch_id,created_at=now,state=ReviewBatchState.READY,
+        review_mode=ReviewMode.HOST_SKILL if diagnostic_only else ReviewMode.RECEIPT_BOUND,
+        dispatcher_kind="diagnostic-candidate" if diagnostic_only else "codex-native-candidate",
+        capabilities=HostCapabilities(platform="codex-app-server",supports_real_subtasks=not diagnostic_only,
+            production_verified=not diagnostic_only,max_parallelism=capabilities.max_parallelism,
+            reason="同一候选受控转换；原始审稿及原生回执保留"),
+        input_manifest_sha256=context.input_manifest_sha256,tasks=[task])
+    record=BatchChapterReview(batch_id=batch_id,chapter_number=context.chapter_number,review_mode=batch.review_mode,
+        task_id=None if diagnostic_only else receipt.task_id,parent_task_id=None if diagnostic_only else receipt.parent_task_id,
+        task_input_manifest_sha256=reviewer.input_manifest_sha256,target=target,reviewed_at=now,**result.model_dump())
+    context_path=Path(context.snapshot_root).parent/"context.json"
+    conversion={"commit_id":commit_id,"diagnostic_only":diagnostic_only,
+        "context_path":context_path.relative_to(Path(context.canonical_root)).as_posix(),"context_sha256":file_digest(context_path),
+        "proof_sha256":file_digest(proof_path),"original_result":raw["result"],"original_target":raw["target"],
+        "formal_target":target.model_dump(mode="json"),"native_task_id":receipt.task_id,
+        "native_parent_id":receipt.parent_task_id,"native_manifest":receipt.task_input_manifest_sha256}
+    files={directory/"batch.json":batch.model_dump_json(indent=2),
+        _review_output_path(private,batch_id,context.chapter_number):record.model_dump_json(indent=2),
+        directory/"conversion.json":json.dumps(conversion,ensure_ascii=False,indent=2)}
+    for path,text in files.items(): _v_write_text(path, text,encoding="utf-8")
+    return [_relative(private,path) for path in files]
+
+
+def record_candidate_review(context, *, author_identity: str, author_session_id: str,
+    reviewer_task, result: ReviewResultInput, capabilities, diagnostic_only: bool = True,
+    host_provenance: dict | None = None) -> dict:
+    """Full-candidate semantic intake in private storage, using the existing review rubric."""
+    from knowledge_product_workflow.production_context import (
+        CandidateProofSet,
+        verify_candidate_proofs,
+    )
+    from knowledge_product_workflow.production_dependencies import file_digest, payload_digest
+    context.verify()
+    if not diagnostic_only and not capabilities.admits_live_parallelism():
+        raise ValueError("未通过宿主资格，不能签真实独立审稿")
+    if (reviewer_task.role != "reviewer" or reviewer_task.chapter_number != context.chapter_number
+            or reviewer_task.candidate_version != context.candidate_version
+            or reviewer_task.state not in {"reviewing", "acceptance_ready"}):
+        raise ValueError("审稿目标／候选版本不相等")
+    if result.reviewer_identity == author_identity or result.reviewer_session_id == author_session_id:
+        raise ValueError("作者身份或作者会话不能自签独立审稿")
+    if not diagnostic_only and (not reviewer_task.host_task_id
+            or result.reviewer_session_id != reviewer_task.host_task_id
+            or not reviewer_task.host_parent_id or reviewer_task.host_task_id == author_session_id):
+        raise ValueError("审稿缺少真实独立父子任务回执")
+    if not diagnostic_only and (
+            reviewer_task.candidate_context_path != str(Path(context.snapshot_root).parent / "context.json")
+            or reviewer_task.candidate_source_sha256 != file_digest(
+                Path(context.snapshot_root) / context.source_relative)):
+        raise ValueError("审稿任务未绑定同一完整候选源稿")
+    proofs_path = Path(context.private_result_root) / "proofs.json"
+    proof = CandidateProofSet.model_validate_json(proofs_path.read_text(encoding="utf-8"))
+    verify_candidate_proofs(context, proof)
+    contract_relative = f"chapters/chapter-{context.chapter_number:02d}-contract.md"
+    contract = Path(context.snapshot_root) / contract_relative
+    missing_units = set(_required_units(contract)) - {e.unit for e in result.unit_evidence}
+    issues = list(result.revision_requests)
+    if result.status is not ReviewStatus.PASSED:
+        issues.append("实际审稿未通过")
+    if min(result.scores.model_dump().values()) < 3 or result.scores.average < 3.5:
+        issues.append("审稿评分未达原Rubric阈值")
+    if any(i.severity is Severity.BLOCKER for i in result.issues):
+        issues.append("审稿存在未解决blocker")
+    if missing_units:
+        issues.append("审稿缺必需教学单元：" + ", ".join(sorted(missing_units)))
+    target = CandidateReviewTarget(chapter_number=context.chapter_number,
+        chapter_path=f"chapters/chapter-{context.chapter_number:02d}.md",
+        contract_path=contract_relative, chapter_sha256=proof.source_sha256,
+        contract_sha256=file_digest(contract), chapter_version=context.candidate_version,
+        author_identity=author_identity, author_session_id=author_session_id,
+        candidate_task_id=context.task_id, candidate_version=context.candidate_version,
+        candidate_input_manifest_sha256=context.input_manifest_sha256,
+        candidate_context_path=str(Path(context.snapshot_root).parent / "context.json"))
+    record = {"schema_version": 1, "target": target.model_dump(), "diagnostic_only": diagnostic_only,
+        "whole_chapter_source": context.source_relative, "reviewer_task_id": reviewer_task.task_id,
+        "result": result.model_dump(mode="json"), "issues": issues,
+        "acceptance_ready": not proof.required_missing and not issues,
+        "result_digest": payload_digest(result.model_dump(mode="json"))}
+    if host_provenance is not None:
+        record["host_provenance"] = host_provenance
+    path = Path(context.private_result_root) / "candidate-review.json"
+    if _v_exists(path):
+        previous = json.loads(path.read_text(encoding="utf-8"))
+        if previous != record:
+            raise ValueError("同一候选审稿已提交不同结果；需新版本，不覆盖旧证据")
+        return previous
+    _v_write_text(path, json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    proof.reports["candidate_review"] = str(path)
+    proof.report_bindings[str(path)] = file_digest(path)
+    proof.diagnostic_only = diagnostic_only
+    proof.required_missing.extend(issues)
+    _v_write_text(proofs_path, proof.model_dump_json(indent=2), encoding="utf-8")
+    return record

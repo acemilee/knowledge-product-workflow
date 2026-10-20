@@ -8,7 +8,15 @@ from hashlib import sha256
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from knowledge_product_workflow.detail_constraints import (
     ChapterBudget,
@@ -18,8 +26,35 @@ from knowledge_product_workflow.detail_constraints import (
     allocate_budgets,
 )
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
+from knowledge_product_workflow.illustration_tasks import (
+    RELATION_FAMILIES,
+    IllustrationTask,
+    validate_task_set,
+)
 from knowledge_product_workflow.models import ArtifactMetadata, ArtifactStatus
-from knowledge_product_workflow.user_decisions import UserDecisionTarget, invalidate_user_decision
+from knowledge_product_workflow.production_dependencies import (
+    ChapterDependency,
+    ChapterExport,
+    SharedContext,
+    dependency_plan_from_chapters,
+)
+from knowledge_product_workflow.user_decisions import UserDecisionTarget
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import (
+    load_yaml as _v_load_yaml,
+)
+from knowledge_product_workflow.verification_context import memoized_read as _memoized_read
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    read_bytes as _v_read_bytes,
+)
+from knowledge_product_workflow.verification_context import (
+    read_text as _v_read_text,
+)
+from knowledge_product_workflow.verification_context import (
+    write_text as _v_write_text,
+)
 from knowledge_product_workflow.workflows.product_brief import (
     brief_contract_fingerprints,
     brief_target_audience,
@@ -176,6 +211,15 @@ class SectionOutlineItem(BaseModel):
     title: str = Field(min_length=1)
     children: list["SectionOutlineItem"] = Field(default_factory=list)
 
+    @field_validator("number", mode="before")
+    @classmethod
+    def require_string_number(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError(  # noqa: TRY004 - Pydantic turns this input error into a validation error.
+                '小节编号 number 必须是字符串；YAML 请写 number: "1.1"，不能写未加引号的 1.1'
+            )
+        return value
+
 
 def _normalized_outline_title(title: str) -> str:
     return unicodedata.normalize("NFC", title).strip()
@@ -222,6 +266,13 @@ def curriculum_outline_schema() -> dict[str, object]:
         }
     return {
         "schema_version": 2,
+        "submission_schema": BlueprintSubmission.model_json_schema(),
+        "submission_notes": [
+            "submission_schema由实际输入模型生成；以下体裁/编号/绑定规则仍由业务校验执行。",
+            "shared_context.cases是案例ID到对象的映射，值不能是字符串；对象内按本书案例填写。",
+            "word_min/word_target/word_max及批准状态由系统派生，不作为蓝图输入填写。",
+            "production_policy_revision=1须显式声明shared_context、每章production_dependencies和production_exports；空列表表示无依赖，省略表示未知。",
+        ],
         "section_outline": {
             "required_for_new_submissions": True,
             "description": "读者可见的编号小节树；编号、标题、层级和顺序批准后冻结。",
@@ -235,6 +286,45 @@ def curriculum_outline_schema() -> dict[str, object]:
         "product_modes": {
             ProductMode.GENERAL.value: "通用知识教程",
             ProductMode.INTERVIEW.value: "面试指导产品；完整示范回答受配额限制",
+        },
+        "claim_ids": {
+            "pattern": r"^claim-[a-z0-9][a-z0-9-]*$",
+            "unique": True,
+            "description": "事实声明标识须使用小写claim-前缀；实际来源核验另行提交。",
+        },
+        "illustration_tasks": {
+            "policy": "政策2须覆盖全部section_outline编号；政策1不接受新图任务。",
+            "item_schema": IllustrationTask.model_json_schema(),
+            "none_example": {
+                "section_id": "1.1",
+                "decision": "none",
+                "alternative_rationale": "本节用有序列表即可表达操作顺序，没有需要图形组织的关系。",
+            },
+            "relation_constraints": {
+                "applies_when": {"production": "create", "relation_kind": "declared"},
+                "families": {
+                    relation: {
+                        "diagram_type": family,
+                        "recommended_direction": direction,
+                        "allowed_directions": (
+                            [None, direction] if relation == "handoff" else [None, "right", "down"]
+                        ),
+                    }
+                    for relation, (family, direction) in RELATION_FAMILIES.items()
+                },
+                "direction_rule": (
+                    "recommended_direction是方向建议；只有handoff硬限为未填或right，"
+                    "其他关系允许未填、right或down。"
+                ),
+            },
+            "decision_rules": [
+                "none只填写section_id、decision和alternative_rationale，不声明task_id或图型。",
+                "required/useful须声明task_id、trigger、read_question、viewpoint和visual_gain。",
+                "create须声明diagram_type和placement；reference须声明reference_task_id。",
+                "production=create且声明relation_kind时，diagram_type须精确匹配relation_constraints；"
+                "未声明关系及none/reference/omit沿用原规则。",
+                "同节可有互补制作任务；none须独占本节，任务标识和制作视角不能重复。",
+            ],
         },
     }
 
@@ -259,7 +349,24 @@ def _template_schema_comments() -> str:
         "# - 每章 weight 决定按教学权重的章节预算分配；Brief 只给页数时，CLI 会按页数估算字数额门。",
         "# - 本章 word 预算（word_min/word_target/word_max）由 CLI 按 weight 派生并写入章节合约，",
         "#   正文写作须对照该预算，避免交付阶段页数不达标。",
+        "# - claim_ids须为唯一的小写claim-标识，例如claim-skill-format。",
+        "# - shared_context.cases的每个值必须是对象，例如 cases: {case-main: {input: '待分类资料', expected: '有效'}}；不能写案例ID到字符串的映射。",
+        "# - 并行依赖政策1须显式填写共享设定和各章依赖/提供列表；这些字段不解锁未经资格验证的正式并行。",
+        "# - 政策2的illustration_tasks必须覆盖section_outline的全部编号，包括不用图的小节。",
+        "#   不用图填写section_id、decision: none、alternative_rationale；不填写task_id或图型。",
+        "#   下方none仅是结构示例，须按实际教学问题逐节判断；完整字段见kp outline-schema。",
+        "# - production=create 且声明 relation_kind 时，diagram_type 必须匹配下列关系映射。",
+        "#   只有 handoff 的 direction 硬限为未填或 right；其他关系的方向只是建议，允许未填、right 或 down。",
+        "#   未声明关系及 none/reference/omit 沿用原规则，不自动补写或修改作者字段。",
     ]
+    illustration_schema = schema["illustration_tasks"]
+    assert isinstance(illustration_schema, dict)
+    relation_constraints = illustration_schema["relation_constraints"]
+    for relation, constraint in relation_constraints["families"].items():
+        lines.append(
+            f"#   {relation} -> diagram_type: {constraint['diagram_type']}；"
+            f"建议 direction: {constraint['recommended_direction']}"
+        )
     for archetype in ChapterArchetype:
         payload = archetypes[archetype.value]
         assert isinstance(payload, dict)
@@ -290,6 +397,23 @@ class BlueprintChapter(BaseModel):
     prohibited_units: list[str] = Field(default_factory=list)
     claim_ids: list[str] = Field(default_factory=list)
     section_outline: list[SectionOutlineItem] = Field(default_factory=list)
+    illustration_policy_revision: int = Field(default=1, ge=1, le=2)
+    illustration_tasks: list[IllustrationTask] = Field(default_factory=list)
+
+    production_dependencies: list[ChapterDependency] | None = None
+    production_exports: list[ChapterExport] | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_fields(self, handler):
+        value = handler(self)
+        if self.production_dependencies is None:
+            value.pop("production_dependencies", None)
+        if self.production_exports is None:
+            value.pop("production_exports", None)
+        if self.illustration_policy_revision == 1:
+            value.pop("illustration_policy_revision", None)
+            value.pop("illustration_tasks", None)
+        return value
 
     @model_validator(mode="after")
     def validate_teaching_form(self) -> "BlueprintChapter":
@@ -328,6 +452,13 @@ class BlueprintChapter(BaseModel):
             raise ValueError("Claim 清单必须使用唯一的小写 claim- 标识")
         if self.section_outline:
             _validate_section_outline(self.chapter_number, self.section_outline)
+        if self.illustration_policy_revision == 2:
+            def numbers(items):
+                return {item.number for item in items} | set().union(
+                    *(numbers(item.children) for item in items)) if items else set()
+            validate_task_set(self.illustration_tasks, numbers(self.section_outline))
+        elif self.illustration_tasks:
+            raise ValueError("旧政策不接收新图任务；先受控采纳政策2")
         return self
 
 
@@ -345,9 +476,77 @@ class BlueprintSubmission(BaseModel):
     interview_answer_policy: InterviewAnswerPolicy | None = None
     scope_expansion_units: list[str] = Field(default_factory=list)
     chapters: list[BlueprintChapter] = Field(min_length=1)
+    illustration_policy_revision: int = Field(default=1, ge=1, le=2)
+    production_policy_revision: int = Field(default=0, ge=0, le=1)
+    shared_context: SharedContext | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def propagate_illustration_policy(cls, value):
+        if isinstance(value, dict) and value.get("illustration_policy_revision") == 2:
+            value = dict(value)
+            if not isinstance(value.get("chapters"), list):
+                return value
+            if any(isinstance(chapter, dict) and chapter.get("illustration_policy_revision", 2) != 2
+                   for chapter in value["chapters"]):
+                raise ValueError("蓝图与章节插图政策不一致")
+            value["chapters"] = [dict(chapter, illustration_policy_revision=2)
+                                 if isinstance(chapter, dict) and "illustration_policy_revision" not in chapter
+                                 else chapter for chapter in value.get("chapters", [])]
+        return value
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_fields(self, handler):
+        value = handler(self)
+        if self.production_policy_revision == 0:
+            value.pop("production_policy_revision", None)
+            value.pop("shared_context", None)
+        if self.illustration_policy_revision == 1:
+            value.pop("illustration_policy_revision", None)
+        return value
 
     @model_validator(mode="after")
     def validate_chapters_and_mode(self) -> "BlueprintSubmission":
+        if self.production_policy_revision == 1:
+            if self.shared_context is None or any(
+                c.production_dependencies is None or c.production_exports is None
+                for c in self.chapters
+            ):
+                raise ValueError("并行蓝图必须在写作前明确公共设定、依赖及提供清单；None不等于无依赖")
+            for chapter in self.chapters:
+                def section_numbers(items):
+                    return {i.number for i in items} | set().union(
+                        *(section_numbers(i.children) for i in items)
+                    )
+                sections = section_numbers(chapter.section_outline)
+                if any(d.section_id not in sections for d in chapter.production_dependencies):
+                    raise ValueError("依赖使用小节不在批准小节树中")
+                if any(e.section_id not in sections for e in chapter.production_exports):
+                    raise ValueError("输出提供小节不在批准小节树中")
+            dependency_plan_from_chapters(
+                [c.model_dump(mode="json") for c in self.chapters], sample_approved=True
+            )
+        if any(chapter.illustration_policy_revision != self.illustration_policy_revision
+               for chapter in self.chapters):
+            raise ValueError("蓝图与章节插图政策版本必须一致")
+        if self.illustration_policy_revision == 2:
+            previous = set()
+            created = set()
+            views = set()
+            for chapter in self.chapters:
+                for task in chapter.illustration_tasks:
+                    if task.task_id and task.task_id in previous:
+                        raise ValueError("全书task_id不能重复")
+                    if task.production == "reference" and task.reference_task_id not in created:
+                        raise ValueError("只能指引回看此前已经规划的图任务")
+                    if task.production == "create":
+                        view = ("".join(task.read_question.split()), "".join(task.viewpoint.split()))
+                        if view in views:
+                            raise ValueError("全书同义图任务重复，优先引用已有图")
+                        views.add(view)
+                        created.add(task.task_id)
+                    if task.task_id:
+                        previous.add(task.task_id)
         numbers = [chapter.chapter_number for chapter in self.chapters]
         if len(numbers) != len(set(numbers)):
             raise ValueError("章节编号必须唯一")
@@ -397,10 +596,10 @@ def _current_length_recommendation(
     workspace: Workspace, brief_path: Path, metadata: ArtifactMetadata, brief_body: str
 ) -> TeachingLengthRecommendation | None:
     path = teaching_length_recommendation_path(workspace)
-    if not path.is_file():
+    if not _v_is_file(path):
         return None
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = _v_load_yaml(_v_read_text(path, encoding="utf-8"))
         recommendation = TeachingLengthRecommendation.model_validate(raw)
     except (OSError, ValueError, yaml.YAMLError):
         return None
@@ -416,15 +615,15 @@ def _current_length_recommendation(
 def create_teaching_length_recommendation_template(workspace: Workspace) -> tuple[Path, Path]:
     """Create the semantic template the curriculum architect uses before blueprinting."""
     brief_path = workspace.root / "planning" / "product-brief.md"
-    if not brief_path.is_file():
+    if not _v_is_file(brief_path):
         raise CurriculumPrerequisiteError("生成教学篇幅评估前必须先创建并批准产品 Brief")
-    metadata, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+    metadata, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
     if metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("生成教学篇幅评估前必须先批准产品 Brief")
     fingerprint = brief_contract_fingerprints(brief_body)["content_contract_sha256"]
     template = workspace.root / "planning" / "teaching-length-recommendation.template.yaml"
     context = workspace.root / "planning" / "teaching-length-recommendation.context.yaml"
-    template.write_text(
+    _v_write_text(template,
         yaml.safe_dump(
             {
                 "schema_version": 1,
@@ -442,7 +641,7 @@ def create_teaching_length_recommendation_template(workspace: Workspace) -> tupl
         encoding="utf-8",
     )
     constraints = parse_detail_constraints(brief_body)
-    context.write_text(
+    _v_write_text(context,
         yaml.safe_dump(
             {
                 "topic": brief_topic(brief_body),
@@ -463,23 +662,33 @@ def create_teaching_length_recommendation_template(workspace: Workspace) -> tupl
 def submit_teaching_length_recommendation(workspace: Workspace, input_path: Path) -> Path:
     """Freeze the curriculum architect's page recommendation for the active Brief."""
     brief_path = workspace.root / "planning" / "product-brief.md"
-    if not brief_path.is_file():
+    if not _v_is_file(brief_path):
         raise CurriculumPrerequisiteError("提交教学篇幅评估前必须先创建并批准产品 Brief")
-    metadata, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+    metadata, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
     if metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("提交教学篇幅评估前必须先批准产品 Brief")
     try:
         source = input_path.expanduser().resolve()
         source.relative_to(workspace.root)
-        raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+        raw = _v_load_yaml(_v_read_text(source, encoding="utf-8"))
         recommendation = TeachingLengthRecommendation.model_validate(raw)
+    except ValidationError as error:
+        fields = "；".join(
+            f"{'.'.join(map(str, item['loc'])) or '推荐区间'}：{item['msg']}（{item['type']}）"
+            for item in error.errors(include_input=False, include_url=False)[:10]
+        )
+        raise BlueprintSubmissionError(
+            f"教学篇幅评估输入无效；字段：{fields}。"
+            "保留当前模板的brief_content_sha256和brief_version，修正所列字段后重交；"
+            "修改文件名或查其他书稿不能修复字段错误。"
+        ) from error
     except (OSError, ValueError, yaml.YAMLError) as error:
         raise BlueprintSubmissionError("教学篇幅评估输入无效") from error
     fingerprint = brief_contract_fingerprints(brief_body)["content_contract_sha256"]
     if recommendation.brief_content_sha256 != fingerprint or recommendation.brief_version != metadata.version:
         raise BlueprintSubmissionError("教学篇幅评估与当前 Brief 不匹配")
     output = teaching_length_recommendation_path(workspace)
-    output.write_text(
+    _v_write_text(output,
         yaml.safe_dump(recommendation.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
@@ -504,7 +713,7 @@ def parse_chapter_budgets(
     match = _BUDGET_BLOCK.search(body)
     if match is None:
         return {}
-    raw = yaml.safe_load(match.group("yaml"))
+    raw = _v_load_yaml(match.group("yaml"))
     if not isinstance(raw, dict) or not isinstance(raw.get("chapter_budgets"), list):
         raise TypeError("章节预算格式不正确")
     budgets = [ChapterBudget.model_validate(item) for item in raw["chapter_budgets"]]
@@ -534,7 +743,7 @@ def parse_blueprint_submission(body: str) -> BlueprintSubmission | None:
     if match is None:
         return None
     try:
-        raw = yaml.safe_load(match.group("yaml"))
+        raw = _v_load_yaml(match.group("yaml"))
     except yaml.YAMLError as error:
         raise BlueprintSubmissionError(f"蓝图契约 YAML 无法解析：{error}") from error
     if not isinstance(raw, dict) or "blueprint" not in raw:
@@ -548,11 +757,11 @@ def parse_blueprint_submission(body: str) -> BlueprintSubmission | None:
 def _load_submission(path: Path) -> BlueprintSubmission:
     """Load a host payload from YAML or JSON without accepting positional terminal input."""
     try:
-        raw_text = path.read_text(encoding="utf-8")
+        raw_text = _v_read_text(path, encoding="utf-8")
     except OSError as error:
         raise BlueprintSubmissionError(f"无法读取蓝图提交文件：{error}") from error
     try:
-        raw = json.loads(raw_text) if path.suffix.casefold() == ".json" else yaml.safe_load(raw_text)
+        raw = json.loads(raw_text) if path.suffix.casefold() == ".json" else _v_load_yaml(raw_text)
     except (json.JSONDecodeError, yaml.YAMLError) as error:
         raise BlueprintSubmissionError(f"蓝图提交必须是有效 YAML 或 JSON：{error}") from error
     if not isinstance(raw, dict):
@@ -590,7 +799,7 @@ def _brief_target_audience(body: str) -> str:
 
 
 def _sha256_file(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
+    return sha256(_v_read_bytes(path)).hexdigest()
 
 
 def _validate_brief_binding(
@@ -708,22 +917,28 @@ def _write_curriculum_blueprint(
     output: Path,
     version: int,
     event_type: str,
+    extra_outputs: dict[str, bytes | None] | None = None,
+    extra_events: list | None = None,
 ) -> Path:
     """Write one validated blueprint revision at the canonical current path."""
+    events = []
     constraints = parse_detail_constraints(brief_body)
     if constraints is not None and submission.audience_level != constraints.audience_level:
         raise BlueprintSubmissionError("课程蓝图受众级别必须与已批准 Brief 一致")
     language = constraints.language if constraints is not None else "zh-CN"
-    chapter_specs = [
-        ChapterSpec(
-            chapter_number=chapter.chapter_number,
-            weight=chapter.weight,
-            rationale=chapter.rationale,
-            required_units=chapter.required_units,
-        )
-        for chapter in submission.chapters
-    ]
-    budgets = allocate_budgets(chapter_specs, constraints) if constraints is not None else []
+    try:
+        chapter_specs = [
+            ChapterSpec(
+                chapter_number=chapter.chapter_number,
+                weight=chapter.weight,
+                rationale=chapter.rationale,
+                required_units=chapter.required_units,
+            )
+            for chapter in submission.chapters
+        ]
+        budgets = allocate_budgets(chapter_specs, constraints) if constraints is not None else []
+    except ValueError as error:
+        raise BlueprintSubmissionError(f"BLUEPRINT_BUDGET_INVALID: 章节教学单元或篇幅预算无效：{error}") from error
     if (
         constraints is not None
         and constraints.word_min is None
@@ -731,7 +946,7 @@ def _write_curriculum_blueprint(
         and budgets
         and budgets[0].word_min is not None
     ):
-        workspace.append_event(
+        events.append((
             "word_budget_estimated",
             {
                 "estimated_word_min": sum(budget.word_min or 0 for budget in budgets),
@@ -739,7 +954,7 @@ def _write_curriculum_blueprint(
                 "estimated_word_max": sum(budget.word_max or 0 for budget in budgets),
                 "pages": constraints.production_page_target,
             },
-        )
+        ))
     artifact = ArtifactMetadata(
         book_id=workspace.root.name,
         artifact_type="curriculum_blueprint",
@@ -749,25 +964,55 @@ def _write_curriculum_blueprint(
     )
     body = f"# {submission.topic}\n\n"
     body += _render_learning_path(submission, language)
+    if submission.production_policy_revision == 1:
+        body += "\n## 写作前依赖确认\n\n下列依赖与公共定义随本蓝图批准；结果依赖须等当前受控结果，接口与导航不等待正文。宿主资格未通过时保持串行。\n\n"
+        for chapter in submission.chapters:
+            dependencies = "；".join(f"{d.section_id}使用第{d.producer_chapter}章 {d.kind}：{d.export_id or '导航'}"
+                                     for d in chapter.production_dependencies) or "已明确无跨章生产依赖"
+            body += f"- 第{chapter.chapter_number}章：{dependencies}。\n"
+    if submission.illustration_policy_revision == 2:
+        from knowledge_product_workflow.illustration_budget import budget_path, load_image_budget
+        made = [(chapter.chapter_number, task) for chapter in submission.chapters
+                for task in chapter.illustration_tasks if task.production == "create"]
+        native = {task.task_id for _chapter, task in made if task.backend == "host-image"}
+        consumed = 0
+        remaining = 2 * len(native)
+        if _v_is_file(budget_path(workspace)):
+            from knowledge_product_workflow.illustration_budget import _sent
+            old = load_image_budget(workspace)
+            consumed = sum(_sent(slot) for slot in old.slots)
+            remaining = sum(max(0, 2 - sum(_sent(slot) for slot in old.slots
+                                           if slot.task_id == task_id or task_id in slot.diagram_ids))
+                            for task_id in native)
+        body += (f"\n## 插图任务与成本预估\n\n拟制作{len(made)}幅教学图，其中原生生图任务{len(native)}个；"
+                 f"已发送历史{consumed}次，当前可用尝试最多{remaining}次，拟冻结总发送上限{consumed + remaining}次。"
+                 "图数由读者任务推导，每任务最多两次，串行；资产与成页质量仍须实际核验，不设文本token额度门，实际图像token未知。\n\n")
+        for number, task in made:
+            body += f"- 第{number}章 {task.section_id}：{task.read_question}（{task.viewpoint}；{'AI插图' if task.backend == 'host-image' else '确定性图'}）。\n"
     body += "\n" + _render_submission_contract(submission, language)
     if budgets:
         body += _render_budgets(budgets, language)
-    output.write_text(render_markdown_artifact(artifact, body), encoding="utf-8")
-    invalidate_user_decision(
-        workspace,
-        UserDecisionTarget.BLUEPRINT,
-        reason="课程蓝图已创建或修订",
+    from knowledge_product_workflow.user_decisions import prepare_decision_invalidation
+    from knowledge_product_workflow.workspace_transactions import (
+        commit_workspace_transaction,
+        prepare_workspace_transaction,
     )
-    workspace.append_event(
-        event_type,
-        {
-            "artifact": str(output.relative_to(workspace.root)),
-            "brief_sha256": submission.brief_sha256,
-            "brief_content_sha256": submission.brief_content_sha256,
-            "chapter_count": len(submission.chapters),
-            "product_mode": submission.product_mode.value,
-        },
-    )
+    outputs = dict(extra_outputs or {})
+    outputs[output.relative_to(workspace.root).as_posix()] = render_markdown_artifact(artifact, body).encode("utf-8")
+    decisions, decision_events = prepare_decision_invalidation(workspace, UserDecisionTarget.BLUEPRINT,
+        reason="课程蓝图已创建或修订")
+    outputs.update(decisions)
+    events.extend(decision_events)
+    events.append((event_type, {"artifact": str(output.relative_to(workspace.root)),
+        "brief_sha256": submission.brief_sha256,
+        "brief_content_sha256": submission.brief_content_sha256,
+        "chapter_count": len(submission.chapters), "product_mode": submission.product_mode.value}))
+    events.extend(extra_events or [])
+    transaction = prepare_workspace_transaction(workspace, outputs, kind="blueprint_revision",
+        scope_chapters=[c.chapter_number for c in submission.chapters], shared_paths=list(outputs),
+        input_bindings={brief_path.relative_to(workspace.root).as_posix(): _sha256_file(brief_path)},
+        events=events)
+    commit_workspace_transaction(workspace, transaction)
     return output
 
 
@@ -777,16 +1022,16 @@ def submit_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
 
     authorize_workflow_transition(workspace, "submit-outline")
     brief_path = workspace.root / "planning" / "product-brief.md"
-    if not brief_path.is_file():
+    if not _v_is_file(brief_path):
         raise CurriculumPrerequisiteError("提交课程蓝图前必须先创建并批准产品 Brief")
-    metadata, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+    metadata, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
     if metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("提交课程蓝图前必须先批准产品 Brief")
     submission = _load_submission(input_path)
     _validate_brief_binding(submission, brief_path, metadata, brief_body)
     _require_length_recommendation(workspace, brief_path, metadata, brief_body, submission)
     output = workspace.root / "planning" / "curriculum-blueprint.md"
-    if output.exists():
+    if _v_exists(output):
         raise FileExistsError(
             f"课程蓝图已存在：{output}；请使用 kp amend-outline 创建受控修订，禁止删除后重建。"
         )
@@ -809,32 +1054,51 @@ def amend_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
     authorize_workflow_transition(workspace, "amend-outline")
     brief_path = workspace.root / "planning" / "product-brief.md"
     output = workspace.root / "planning" / "curriculum-blueprint.md"
-    if not brief_path.is_file() or not output.is_file():
+    if not _v_is_file(brief_path) or not _v_is_file(output):
         raise CurriculumPrerequisiteError("修订课程蓝图需要当前 Brief 与已有课程蓝图")
-    brief_metadata, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
-    blueprint_metadata, _ = parse_markdown_artifact(output.read_text(encoding="utf-8"))
+    brief_metadata, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
+    blueprint_metadata, _ = parse_markdown_artifact(_v_read_text(output, encoding="utf-8"))
     if brief_metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("修订课程蓝图前必须先批准当前产品 Brief")
-    if blueprint_metadata.status is not ArtifactStatus.APPROVED:
-        raise CurriculumPrerequisiteError("当前课程蓝图尚未获得批准，不能创建修订")
+    if blueprint_metadata.status not in {ArtifactStatus.APPROVED, ArtifactStatus.READY_FOR_REVIEW}:
+        raise CurriculumPrerequisiteError("当前课程蓝图状态不允许创建修订")
+    if blueprint_metadata.status is ArtifactStatus.READY_FOR_REVIEW and any(
+        (workspace.root / "chapters").glob("chapter-*.md")
+    ):
+        raise CurriculumPrerequisiteError("待审批蓝图已被下游工件使用，不能替换初始草案")
     submission = _normalize_amendment_binding(
         _load_submission(input_path), brief_path, brief_metadata, brief_body
     )
     _require_length_recommendation(workspace, brief_path, brief_metadata, brief_body, submission)
     _validate_brief_binding(submission, brief_path, brief_metadata, brief_body)
     history = workspace.root / "planning" / "history"
-    history.mkdir(exist_ok=True)
+    _v_mkdir(history,exist_ok=True)
     archived = history / f"curriculum-blueprint.v{blueprint_metadata.version}.md"
-    if archived.exists():
+    if _v_exists(archived):
         raise FileExistsError(f"课程蓝图历史版本已存在：{archived}")
-    archived.write_bytes(output.read_bytes())
+    extra_outputs = {archived.relative_to(workspace.root).as_posix(): _v_read_bytes(output)}
     contract_history = workspace.root / "chapters" / "history"
+    from knowledge_product_workflow.change_impact import (
+        binding_policy_revision,
+        preview_change_impact,
+    )
+    precise = binding_policy_revision(workspace) == 2
+    changed_chapters = None
+    if precise:
+        impact = preview_change_impact(workspace, input_path)
+        changed_chapters = {item.chapter_number for item in impact.chapters
+                            if item.disposition != "unaffected"}
+        extra_outputs[f"runs/orchestration/change-impacts/{impact.impact_id}.json"] = impact.model_dump_json(indent=2).encode("utf-8")
     for contract in sorted((workspace.root / "chapters").glob("chapter-*-contract.md")):
-        contract_history.mkdir(exist_ok=True)
+        number = int(contract.stem.split("-")[1])
+        if changed_chapters is not None and number not in changed_chapters:
+            continue
+        _v_mkdir(contract_history,exist_ok=True)
         archived_contract = contract_history / f"{contract.stem}.blueprint-v{blueprint_metadata.version}.md"
-        if archived_contract.exists():
+        if _v_exists(archived_contract):
             raise FileExistsError(f"章节合约历史版本已存在：{archived_contract}")
-        contract.replace(archived_contract)
+        extra_outputs[archived_contract.relative_to(workspace.root).as_posix()] = _v_read_bytes(contract)
+        extra_outputs[contract.relative_to(workspace.root).as_posix()] = None
     result = _write_curriculum_blueprint(
         workspace,
         brief_path,
@@ -843,33 +1107,30 @@ def amend_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
         submission,
         output,
         version=blueprint_metadata.version + 1,
-        event_type="curriculum_amended",
-    )
-    workspace.append_event(
-        "curriculum_contracts_archived",
-        {
-            "blueprint_version": blueprint_metadata.version,
-            "archived": str(archived.relative_to(workspace.root)).replace("\\", "/"),
-        },
+        event_type="curriculum_amended", extra_outputs=extra_outputs,
+        extra_events=[("curriculum_contracts_archived", {"blueprint_version": blueprint_metadata.version,
+            "archived": archived.relative_to(workspace.root).as_posix()})],
     )
     return result
 
 
+@_memoized_read
 def require_current_submitted_blueprint(
     workspace: Workspace,
+    *, require_approved: bool = True,
 ) -> tuple[Path, ArtifactMetadata, BlueprintSubmission]:
     """Return an approved blueprint only when it still binds the current approved Brief."""
     brief_path = workspace.root / "planning" / "product-brief.md"
     blueprint_path = workspace.root / "planning" / "curriculum-blueprint.md"
-    if not brief_path.is_file() or not blueprint_path.is_file():
+    if not _v_is_file(brief_path) or not _v_is_file(blueprint_path):
         raise CurriculumPrerequisiteError("缺少已批准 Brief 或课程蓝图")
-    brief_metadata, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+    brief_metadata, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
     blueprint_metadata, blueprint_body = parse_markdown_artifact(
-        blueprint_path.read_text(encoding="utf-8")
+        _v_read_text(blueprint_path, encoding="utf-8")
     )
     if brief_metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("当前产品 Brief 尚未获得批准")
-    if blueprint_metadata.status is not ArtifactStatus.APPROVED:
+    if require_approved and blueprint_metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("当前课程蓝图尚未获得批准")
     submission = parse_blueprint_submission(blueprint_body)
     if submission is None:
@@ -905,17 +1166,18 @@ def _render_budgets(budgets: list[ChapterBudget], language: str) -> str:
 
 def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path) -> Path:
     """Write a blank host-input template; never create topic content or a real blueprint."""
-    metadata, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+    metadata, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
     if metadata.status is not ArtifactStatus.APPROVED:
         raise CurriculumPrerequisiteError("生成课程蓝图模板前必须先批准产品 Brief")
     output = workspace.root / "planning" / "curriculum-blueprint.template.yaml"
-    if output.exists():
+    if _v_exists(output):
         raise FileExistsError(
             f"课程蓝图提交模板已存在：{output}；如需修订请使用 kp amend-outline --from <修订蓝图>，禁止删除后重建。"
         )
     constraints = parse_detail_constraints(brief_body)
     payload = {
         "schema_version": 2,
+        "illustration_policy_revision": 2,
         "brief_sha256": _sha256_file(brief_path),
         "brief_content_sha256": brief_contract_fingerprints(brief_body)["content_contract_sha256"],
         "brief_version": metadata.version,
@@ -937,6 +1199,13 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
                 "optional_units": [],
                 "prohibited_units": [],
                 "claim_ids": [],
+                "illustration_tasks": [
+                    {
+                        "section_id": "<章节号.1>",
+                        "decision": "none",
+                        "alternative_rationale": "<说明本节为何不需要图以及采用的表达形式>",
+                    }
+                ],
                 "section_outline": [
                     {
                         "number": "<章节号.1>",
@@ -947,7 +1216,16 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
             }
         ],
     }
-    output.write_text(
+    from knowledge_product_workflow.runtime import _read_orchestration_state
+
+    state = _read_orchestration_state(workspace)
+    if state and state.production_mode == "adaptive":
+        payload["production_policy_revision"] = 1
+        payload["shared_context"] = {"terminology": {}, "cases": {}, "conventions": [], "claim_ids": []}
+        for chapter in payload["chapters"]:
+            chapter["production_dependencies"] = None
+            chapter["production_exports"] = None
+    _v_write_text(output,
         _template_schema_comments() + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
@@ -972,14 +1250,14 @@ def create_section_outline_migration_draft(workspace: Workspace) -> Path:
         / "templates"
         / f"curriculum-blueprint.v{metadata.version}.section-outline-candidate.yaml"
     )
-    if output.exists():
+    if _v_exists(output):
         raise FileExistsError(f"小节结构迁移候选已存在：{output}")
     candidates: list[dict[str, object]] = []
     for chapter in submission.chapters:
         chapter_path = workspace.root / "chapters" / f"chapter-{chapter.chapter_number:02d}.md"
         headings: list[dict[str, object]] = []
-        if chapter_path.is_file():
-            _, body = parse_markdown_artifact(chapter_path.read_text(encoding="utf-8"))
+        if _v_is_file(chapter_path):
+            _, body = parse_markdown_artifact(_v_read_text(chapter_path, encoding="utf-8"))
             headings = _extract_numbered_heading_candidates(body, chapter.chapter_number)
         candidates.append(
             {
@@ -999,8 +1277,8 @@ def create_section_outline_migration_draft(workspace: Workspace) -> Path:
         ),
         "chapters": candidates,
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    _v_mkdir(output.parent,parents=True,exist_ok=True)
+    _v_write_text(output, yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
     workspace.append_event(
         "section_outline_migration_candidate_created",
         {"artifact": str(output.relative_to(workspace.root)).replace("\\", "/")},

@@ -1,16 +1,38 @@
 # Skill 架构与职责
 
-Knowledge Product Workflow（KP）采用宿主驱动的多 Skill 协作模式：支持本地 Skill 的宿主（例如 Codex 或 Claude Code）负责理解用户意图和执行专业写作任务；`kp` CLI 负责保存工件、状态迁移、版本绑定、质量门和 PDF 渲染。KP 不内置或固定任何 LLM，也不会自行请求模型 API。
+Knowledge Product Workflow（KP）采用宿主驱动的多 Skill 协作模式：支持本地 Skill 的宿主（例如 Codex 或 Claude Code）负责理解用户意图和执行专业写作任务；`kp` CLI 负责保存工件、状态迁移、版本绑定、质量门和 PDF 渲染。KP 不内置或固定任何 LLM。确定性核心不请求模型；v1.4.0 的原生桥仅在明确额度、隔离与真实资格通过后使用宿主 App Server，默认零额度，当前真实生产资格仍待验。
 
-本页说明的是**公开可部署的 13 个 Skill**。项目内的规范 `kp-*` Skill 包是唯一真源；`module/` 只是旧角色说明的兼容索引，不能作为安装源或修改目标。
+本页说明的是**公开可部署的 14 个 Skill**。项目内的规范 `kp-*` Skill 包是唯一真源；`module/` 只是旧角色说明的兼容索引，不能作为安装源或修改目标。
+
+## v1.4.2 读者任务与代码呈现
+
+Brief 先确认 `teaching_focus`：`method_practice`、`implementation` 或 `mixed`。方法类教程保留完整提示、输入输出、失败对照和迁移练习；完整运行器可放配套资源，正文只保留讲清机制所需的片段。实现类教程仍可保留必要完整代码，不为所有题材设统一行数硬上限。旧书需经原 Brief 变更与确认流程显式采用，升级不自动改正文。
+
+内容计划中的 `artifact_kind: prompt` 不要求附程序；`artifact_kind: code` 在新政策下须说明 `code_delivery`，选择 `inline_complete`、`excerpt_with_resource` 或 `resource_only`。资源路径限定本书 assets，片段按正文围栏序号与完整程序行号精确绑定；缺包、错绑、陈旧实跑证据不能发布。配套 ZIP 和成员清单随汇编事务生成，进入交付 QA 与最终交付清单；publish 不隐式补包。当前自动实跑只支持Python；其他语言资源可读但实跑未知时仍拒绝完整资源交付，不能把打包成功当已验证。
+
+已有作者和编辑同时检查教学层次、阅读节奏、必要代码与完整练习，不增加固定审核角色或模型回合。程序、提示、数据和命令分开统计，聚合统计不因拆围栏变少；统计只定位复核，不能证明教学质量。提示与相关输入输出相邻，练习附参考与迁移，不强制卡片或图表配额。
+
+本地 PDF 编译默认 300 秒；仅 `render-pdf --compile-timeout` 可显式设 1—600 秒，网络仍为 30 秒，失败不自动延长或重试。横向文字扫描只列页码、坐标与原文候选，必须看当前清晰页确认。视觉读视图仅限单次命令，完整字节与写前新鲜性核验保留；新规则的报告须重新量测，历史记录保留。
+
+`kp outline-schema --json` 直接给实际蓝图输入模型，其中 `shared_context.cases` 为案例 ID 到对象的映射；`kp commands --all --command pdf-observation-template --json` 给该命令的精确参数，模板命令本身已输出 JSON，不再加 `--json`。
+
+## v1.4.1 r0.5 操作变化
+
+首次章节计划使用`content-plan-template <章号> --json`，一次取真实提交Schema，原文本输出兼容。新书证据政策1要求教学检查附当前单元原文引用与具体判断；视觉区分概览/细查、page/context，新Schema以当前模板为准，不用脚本默认passed。旧书显式`adopt-reading-policy --confirm`才迁移，已发布历史不自动撤销。
+
+章末偶发空白可容忍；图表挤页致前页大白需修，同小节可浮动回填、长表可合法续页。35%只是跨页核查候选，不是密度自动质量分。
+
+PDF提问前先request-user-decision明确scope，回复后record-user-decision记录实际scope再记录复核，不能把一般批准当本人全页覆盖。终检一次，publish复用完整current QA；报告缺失/陈旧/旧规则时先validate-delivery，不在publish隐式重算。需要续作时recovery-view读取operation_diagnostics并沿原op/tx处理；close-failed-operation须reason和完整证据，不自动结案。PowerShell前步非零立即停止依赖链，复用一次status --json结果，避免重复深扫。
 
 ## 使用原则
 
 - 普通用户只需从 `kp-create` 启动或继续工作流。无需逐个点名子 Skill，也不需要输入工单、哈希、章节合约或审稿 JSON。
-- 用户只在三个产品决策点确认：Brief、课程蓝图、第一章样章。之后说“继续完成全书，直到交付”即可让根 Skill 自动推进可安全执行的后续步骤。
+- 制作阶段在三个产品决策点确认：Brief、课程蓝图、第一章样章。PDF 交付另需绑定当前文件与明确范围的人审批准；一般回复不扩为用户完整检查全页。制作授权后说“继续完成全书，直到交付”即可让根 Skill 自动推进可安全执行的后续步骤。
 - 一个子 Skill 不是一个固定模型，也不是一个必然独立的 API 调用。它是一份定义任务边界、输入输出、验收条件和禁止事项的可加载指令包。
 - 专业 Skill 只能处理根编排器分配的当前工作单。输入版本改变、工单过期或章节租约冲突时，必须停止并交回根编排器重新路由。
 - `kp` CLI 是确定性控制面，不是模型 Skill。它不编写课程或正文，也不替用户做产品决策。
+- v1.3.5研究先核pending_claim_ids、逐声明验证并按同一证据组一次多--claim登记；章节已有源稿先消费readonly_diagnostics与check-chapter，当前报告复用、仅刷新必要项；视觉只填pending_pages，保留已有有效观察与失败／无图边界。
+- 标准CLI主动作成功由CLI自动完成原工单并产生合法后继，根消费回执／状态，不另调手动完成。draft保持租约，辅助更新按原授权刷新，只读查询不收尾；手动完成仅保留明确获授权且满足原证明门的人工恢复兼容路径。
 
 ## 协作链路
 
@@ -199,3 +221,23 @@ flowchart TD
 安装和升级时，按当前宿主支持的本地 Skill 机制导入规范 `kp-*` Skill 包及共享编排契约。不要以复制旧模块目录、修改运行日志或绕过质量门代替规范安装与升级。
 
 新增或修改任一 Skill 时，必须同步更新其 `SKILL.md` 元数据、包清单、本页的职责说明及对应的 CLI/回归测试。变更不能通过只改提示词绕过状态机、人工确认或确定性质量门。
+
+
+## v1.4.0 隔离并行生产基础
+
+新书请求自适应、旧书保持串行；`kp production-plan --workspace <书稿> --json`在写作前列公共约定、navigation/interface/result依赖、就绪与阻断。4/5/6为全部子代理共享候选总池；多章候选、滚动送审、私有证明、幂等和单写者提交保留原质量/人工门。当前真实宿主资格仍pending，实际原生生产保持串行，不能宣称已支持真实4~6或效率通过。`production-start --diagnostic`和模拟仅私有诊断，不满足生产或发布门；不自动安装、同步、迁移、重启或发布。
+# v1.4.0 精确更新与恢复（2026-10-15）
+
+根Skill首次进入或换模型恢复先读取recovery-view与当前工单；专业角色只接收相关章节及实际依赖，不反复全书重读。课程角色在写作前明确typed依赖、共享约定，修订前预览影响；作者区分正文修订与证明更新，审稿角色只复核失效领域并保留原件。独立后章可绕开待修章继续；最终出版不能绕开债务。新书policy2，旧书显式迁移，不自动恢复撤销批准，详见共享编排契约。
+
+
+## 2026-10-16 · v1.4.0效率修正（隔离工程，未部署）
+
+- 本地CLI提交使用原进程／父工具句柄，由一个等待owner负责；不能额外创建只会sleep、询问进度或转发“仍在运行”的LLM协调者。提交可预先指定`--operation-id op-<唯一标识>`，加`--operation-events`在stderr取得早期ID与阶段JSONL；正常stdout兼容原格式。
+- 等待先查`kp operation-status --workspace <workspace> --operation-id <原ID> --json`，或由一个程序执行`kp wait-operation --workspace <workspace> --operation-id <原ID> --timeout 60`。它只读固定回执／原事务，不用深status替代心跳；一个动作不多层轮询。正文提交与控制面收尾分别记录；断流／超时先核原进程与回执，domain完成只`recover-operation`补原事务／控制面，禁止重发submit-chapter或再次执行示例。unknown不猜结束、不释放槽位。
+- 原生通道在同一认证与ledger进程使用有界`run_until_attention`；默认只收原回执，`authorized_actions`明确授权dispatch/freeze/commit后才可自动推进；commit还要同版本task_id/context/compliance，不能合成语义证明／用户批准。保持共享总池，失败／EOF／deadline保留未知，不重试未知派单。暂停不派新任务。
+- U11真实宿主的无推理守候／可见反馈接线仍pending。程序本地heartbeat≤30秒不算真实进展；未经实际宿主证明不能宣称“零推理守候已接入”。当前降级为单父代理有界等待，按宿主可见能力满足≤60秒反馈，必要模型回合如实计入开销。
+- 每个任务／候选版本创建新角色上下文，依据结构化handoff的task/version/manifest、完成项、待办、相关输入和unknown继续；不默认累积全书聊天，不为报进度反复读章。作者读批准公共设定、本章合约／计划和显式依赖。编辑／审稿读完整冻结当前章与全部必需比较单元；缺材料明确请求缺失范围，禁止猜测、截断必要原文或把摘要当原文。当前完整章及必要引用不能为节约Token被省略。
+- 同一证据组先逐声明核验，再一次research重复`--claim`关联多项；当前Schema版本首次发现并复用，内容计划依本章template填写，禁止失败提交探索枚举。证明更新用refresh-chapter-proofs／recheck-chapter，按真实依赖局部复核，独立后续章继续；最终质量门仍必须收齐债务。
+
+原因：同动作重复深检与路由、全书嵌套解析、仅按阶段计进展、领域已提交却缺控制回执、多层模型等待共同放大耗时。代码分别由verification_context、局部索引／ledger视图、finish_controlled_action、operation_receipts和run_until_attention承担；journal仍是领域事实，回执不授新权。真实宿主资格、U11反馈接线与生产效率结论分别记录，离线协议不能替代。

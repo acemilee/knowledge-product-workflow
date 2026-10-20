@@ -15,7 +15,6 @@ from knowledge_product_workflow.publishing import (
     create_delivery_manifest,
     create_quarto_source,
 )
-from knowledge_product_workflow.quality import QualityReport
 from knowledge_product_workflow.workflows.product_brief import create_product_brief
 from knowledge_product_workflow.workflows.validation import (
     run_delivery_validation,
@@ -93,10 +92,6 @@ def test_pdf_page_shortfall_blocks_manifest(tmp_path: Path) -> None:
     writer.add_blank_page(595, 842)
     with pdf_path.open("wb") as handle:
         writer.write(handle)
-    (workspace.root / "delivery" / "qa-report.json").write_text(
-        QualityReport().model_dump_json(), encoding="utf-8"
-    )
-
     report_path, report = run_delivery_validation(workspace)
 
     assert report_path.exists()
@@ -198,8 +193,9 @@ def test_pdf_diagram_layout_filter_is_part_of_the_fixed_rendering_contract(tmp_p
     filter_source = (workspace.root / "delivery" / "knowledge-book-components.lua").read_text(
         encoding="utf-8"
     )
-    assert "knowledge-product-pdf-v4-diagram-layout" in filter_source
-    assert 'element.attributes["height"] = "0.52\\\\textheight"' in filter_source
+    assert "knowledge-product-pdf-v6-diagram-layout" in filter_source
+    assert 'element.attributes["width"] = "100%"' in filter_source
+    assert 'element.attributes["height"] = "145mm"' in filter_source
 
 
 def test_pdf_bookmarks_are_required_for_pdf_delivery(tmp_path: Path) -> None:
@@ -243,6 +239,9 @@ def test_pdf_diagram_visual_review_is_bound_to_current_pdf_bytes(tmp_path: Path)
     assert {finding.code for finding in validate_pdf_visual_contract(workspace)} == {
         "PDF_DIAGRAM_MANUAL_VISUAL_REVIEW_REQUIRED"
     }
+    from knowledge_product_workflow.pdf_preview import render_pdf_preview_set
+
+    render_pdf_preview_set(pdf_path, workspace.root / "runs" / "pdf-preview")
     record_manual_pdf_visual_review(workspace, "用户")
     assert validate_pdf_visual_contract(workspace) == []
 
@@ -259,6 +258,13 @@ def test_pdf_diagram_visual_review_is_bound_to_current_pdf_bytes(tmp_path: Path)
 
 def test_manifest_records_rendering_source_hashes(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "guide")
+    # This is a legacy rendering-manifest fixture, not a new approved product.
+    from knowledge_product_workflow.presentation import (
+        PresentationOverrides,
+        load_or_create_publication_profile,
+    )
+    load_or_create_publication_profile(workspace, language="zh-CN",
+                                       overrides=PresentationOverrides(cover_layout_revision=1))
     markdown_path = workspace.root / "delivery" / "book.md"
     markdown_path.write_text("# Guide\n", encoding="utf-8")
     create_quarto_source(workspace, markdown_path)
@@ -268,9 +274,8 @@ def test_manifest_records_rendering_source_hashes(tmp_path: Path) -> None:
     writer.add_outline_item("目录", 0)
     with pdf_path.open("wb") as handle:
         writer.write(handle)
-    (workspace.root / "delivery" / "qa-report.json").write_text(
-        QualityReport().model_dump_json(), encoding="utf-8"
-    )
+    _, report = run_delivery_validation(workspace)
+    assert report.publishable, report.findings
 
     manifest_path = create_delivery_manifest(workspace, markdown_path, pdf_path)
 

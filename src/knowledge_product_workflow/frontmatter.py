@@ -5,6 +5,9 @@ from __future__ import annotations
 import yaml
 
 from knowledge_product_workflow.models import ArtifactMetadata
+from knowledge_product_workflow.verification_context import (
+    load_yaml as _v_load_yaml,
+)
 
 
 def render_markdown_artifact(metadata: ArtifactMetadata, body: str) -> str:
@@ -21,4 +24,4 @@ def parse_markdown_artifact(text: str) -> tuple[ArtifactMetadata, str]:
     if len(parts) != 3:
         raise ValueError("Markdown artifact frontmatter is not closed")
     _, raw_metadata, body = parts
-    return ArtifactMetadata.model_validate(yaml.safe_load(raw_metadata)), body
+    return ArtifactMetadata.model_validate(_v_load_yaml(raw_metadata)), body

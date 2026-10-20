@@ -409,3 +409,39 @@ def test_legacy_blueprint_can_only_create_a_read_only_migration_candidate(tmp_pa
     assert candidate_payload["migration_only"] is True
     assert candidate_payload["source_blueprint_version"] == 1
     assert "不得直接修改当前蓝图" in candidate_payload["instructions"]
+
+
+def test_appendix_with_empty_units_can_be_submitted_and_budgeted(tmp_path: Path) -> None:
+    workspace = Workspace.create(tmp_path, "appendix-guide")
+    brief = create_product_brief(workspace, "Agent 开发面试指导", DetailConstraints(target_words=100), target_audience="希望转行 Agent 开发的程序员")
+    _approve(brief)
+    payload = _submission(brief)
+    payload["product_mode"] = "general"
+    payload["interview_answer_policy"] = None
+    chapter = payload["chapters"][0]
+    chapter.update({
+        "chapter_archetype": "appendix", "required_units": [], "optional_units": [],
+        "learning_objectives": [], "section_outline": [{"number": "1.1", "title": "操作索引", "children": []}],
+    })
+    payload["chapters"] = [chapter]
+    source = workspace.root / "runs" / "appendix.yaml"
+    source.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
+    blueprint = submit_curriculum_blueprint(workspace, source)
+    assert parse_blueprint_submission(parse_markdown_artifact(blueprint.read_text(encoding="utf-8"))[1]).chapters[0].required_units == []
+    _approve(blueprint)
+    assert compile_chapter_contracts(workspace)
+
+
+def test_float_section_number_has_actionable_cli_error_without_traceback(tmp_path: Path) -> None:
+    workspace = Workspace.create(tmp_path, "number-guide")
+    brief = create_product_brief(workspace, "Agent 开发面试指导", DetailConstraints(target_words=100), target_audience="希望转行 Agent 开发的程序员")
+    _approve(brief)
+    payload = _submission(brief)
+    payload["chapters"][0]["section_outline"][0]["number"] = 1.1
+    source = workspace.root / "runs" / "number.yaml"
+    source.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
+    result = CliRunner().invoke(app, ["submit-outline", "--workspace", str(workspace.root), "--from", str(source)])
+    assert result.exit_code == 1
+    assert 'number: "1.1"' in result.output
+    assert "Traceback" not in result.output
+    assert not (workspace.root / "planning" / "curriculum-blueprint.md").exists()

@@ -12,10 +12,29 @@ from knowledge_product_workflow.frontmatter import parse_markdown_artifact, rend
 from knowledge_product_workflow.models import ArtifactMetadata, ArtifactStatus
 from knowledge_product_workflow.user_decisions import (
     UserDecisionTarget,
-    consume_approved_user_decision,
     invalidate_user_decision,
     managed_user_decisions,
     require_approved_user_decision,
+)
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import (
+    load_yaml as _v_load_yaml,
+)
+from knowledge_product_workflow.verification_context import memoized_read as _memoized_read
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    read_bytes as _v_read_bytes,
+)
+from knowledge_product_workflow.verification_context import (
+    read_text as _v_read_text,
+)
+from knowledge_product_workflow.verification_context import (
+    unlink as _v_unlink,
+)
+from knowledge_product_workflow.verification_context import verified_read as _verification_read
+from knowledge_product_workflow.verification_context import (
+    write_text as _v_write_text,
 )
 from knowledge_product_workflow.workflows.curriculum import (
     BlueprintChapter,
@@ -58,9 +77,9 @@ def _require_approved_curriculum(workspace: Workspace) -> Path:
 
 def _is_english_workspace(workspace: Workspace) -> bool:
     brief_path = workspace.root / "planning" / "product-brief.md"
-    if not brief_path.is_file():
+    if not _v_is_file(brief_path):
         return False
-    _, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+    _, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
     constraints = parse_detail_constraints(brief_body)
     return constraints is not None and constraints.language == "en-US"
 
@@ -71,7 +90,7 @@ def parse_chapter_contract_binding(body: str) -> dict[str, object] | None:
     if match is None:
         return None
     try:
-        raw = yaml.safe_load(match.group("yaml"))
+        raw = _v_load_yaml(match.group("yaml"))
     except yaml.YAMLError as error:
         raise ValueError(f"章节合约绑定 YAML 无法解析：{error}") from error
     if not isinstance(raw, dict) or not isinstance(raw.get("contract"), dict):
@@ -80,7 +99,7 @@ def parse_chapter_contract_binding(body: str) -> dict[str, object] | None:
 
 
 def _file_sha256(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
+    return sha256(_v_read_bytes(path)).hexdigest()
 
 
 def _chapter_definition_sha256(chapter: BlueprintChapter) -> str:
@@ -89,8 +108,8 @@ def _chapter_definition_sha256(chapter: BlueprintChapter) -> str:
 
 
 def _contract_binding(blueprint_path: Path, brief_path: Path, chapter: BlueprintChapter) -> dict[str, object]:
-    _, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
-    return {
+    _, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
+    binding = {
         "schema_version": 1,
         "blueprint_sha256": _file_sha256(blueprint_path),
         "brief_sha256": _file_sha256(brief_path),
@@ -98,12 +117,22 @@ def _contract_binding(blueprint_path: Path, brief_path: Path, chapter: Blueprint
         "chapter_definition_sha256": _chapter_definition_sha256(chapter),
         "chapter": chapter.model_dump(mode="json"),
     }
+    from knowledge_product_workflow.change_impact import binding_policy_revision, chapter_bindings
+    workspace = Workspace(root=blueprint_path.parent.parent)
+    if binding_policy_revision(workspace) == 2:
+        binding["schema_version"] = 2
+        binding["semantic_bindings"] = chapter_bindings(workspace, chapter.chapter_number).semantic_values()
+    return binding
 
 
 def _contract_binding_matches(binding: dict[str, object] | None, expected: dict[str, object]) -> bool:
     """Accept legacy full-file bindings and V2 content bindings without weakening checks."""
     if binding is None:
         return False
+    if expected.get("schema_version") == 2:
+        return (binding.get("schema_version") == 2
+                and binding.get("chapter") == expected["chapter"]
+                and binding.get("semantic_bindings") == expected["semantic_bindings"])
     if "brief_content_sha256" in binding:
         return all(
             binding.get(key) == expected.get(key)
@@ -117,6 +146,27 @@ def require_current_chapter_contract(
     workspace: Workspace, chapter_number: int
 ) -> tuple[Path, BlueprintChapter]:
     """Return one approved derived contract only when all upstream bindings still match."""
+    from knowledge_product_workflow.workspace_transactions import require_transaction_consistency
+    require_transaction_consistency(workspace, read_paths={"planning/curriculum-blueprint.md",
+        "planning/product-brief.md", f"chapters/chapter-{chapter_number:02d}-contract.md"})
+    return _validated_chapter_contract(workspace, chapter_number)
+
+
+def require_current_chapter_contract_in_view(workspace: Workspace, chapter_number: int):
+    """Internal batch consumer; without an explicit action view, admit afresh."""
+    from knowledge_product_workflow.workspace_transactions import (
+        require_transaction_consistency_in_view,
+    )
+    require_transaction_consistency_in_view(workspace, read_paths={"planning/curriculum-blueprint.md",
+        "planning/product-brief.md", f"chapters/chapter-{chapter_number:02d}-contract.md"})
+    return _validated_chapter_contract(workspace, chapter_number)
+
+
+@_memoized_read
+def _validated_chapter_contract(
+    workspace: Workspace, chapter_number: int,
+) -> tuple[Path, BlueprintChapter]:
+    # Transaction admission is deliberately outside this deterministic snapshot.
     blueprint_path, _, submission = require_current_submitted_blueprint(workspace)
     chapter = next(
         (item for item in submission.chapters if item.chapter_number == chapter_number), None
@@ -124,10 +174,10 @@ def require_current_chapter_contract(
     if chapter is None:
         raise ChapterContractRequiredError(f"当前课程蓝图中不存在第 {chapter_number} 章")
     contract_path = workspace.root / "chapters" / f"chapter-{chapter_number:02d}-contract.md"
-    if not contract_path.is_file():
+    if not _v_is_file(contract_path):
         raise ChapterContractRequiredError(f"缺少第 {chapter_number} 章的派生合约")
     try:
-        metadata, body = parse_markdown_artifact(contract_path.read_text(encoding="utf-8"))
+        metadata, body = parse_markdown_artifact(_v_read_text(contract_path, encoding="utf-8"))
         binding = parse_chapter_contract_binding(body)
     except (OSError, ValueError) as error:
         raise ChapterContractRequiredError(f"第 {chapter_number} 章合约无效：{error}") from error
@@ -163,6 +213,12 @@ def _render_contract_body(
     body += "".join(f"- {claim}\n" for claim in chapter.claim_ids) or "- no_external_claims\n"
     body += f"\n## {section_outline_heading}\n\n"
     body += _render_section_outline(chapter.section_outline)
+    if chapter.production_dependencies is not None:
+        body += "\n## 写作依赖与提供边界\n\n"
+        body += "".join(f"- {d.section_id} 使用第{d.producer_chapter}章：{d.kind}／{d.export_id or '导航'}；{d.purpose}\n"
+                        for d in chapter.production_dependencies) or "- 已明确无跨章生产依赖。\n"
+        body += "".join(f"- 提供 {e.export_id}（{e.section_id}／{e.kind}）：{e.definition}\n"
+                        for e in chapter.production_exports or [])
     if budget is not None:
         body += "\n## " + ("Detail budgets" if english else "章节预算") + "\n\n```yaml\n"
         body += yaml.safe_dump(budget, allow_unicode=True, sort_keys=False).rstrip() + "\n```\n"
@@ -193,17 +249,18 @@ def compile_chapter_contracts(workspace: Workspace) -> list[Path]:
             "kp amend-outline --workspace <工作区> --from <蓝图输入> 补齐并重新批准。"
         )
     brief_path = workspace.root / "planning" / "product-brief.md"
-    _, blueprint_body = parse_markdown_artifact(blueprint_path.read_text(encoding="utf-8"))
-    _, brief_body = parse_markdown_artifact(brief_path.read_text(encoding="utf-8"))
+    _, blueprint_body = parse_markdown_artifact(_v_read_text(blueprint_path, encoding="utf-8"))
+    _, brief_body = parse_markdown_artifact(_v_read_text(brief_path, encoding="utf-8"))
     constraints = parse_detail_constraints(brief_body)
     english = constraints is not None and constraints.language == "en-US"
     budgets = parse_chapter_budgets(blueprint_body, constraints)
     outputs: list[Path] = []
+    pending_outputs = {}
     for chapter in submission.chapters:
         output = workspace.root / "chapters" / f"chapter-{chapter.chapter_number:02d}-contract.md"
         binding = _contract_binding(blueprint_path, brief_path, chapter)
-        if output.exists():
-            existing_metadata, existing_body = parse_markdown_artifact(output.read_text(encoding="utf-8"))
+        if _v_exists(output):
+            existing_metadata, existing_body = parse_markdown_artifact(_v_read_text(output, encoding="utf-8"))
             if existing_metadata.status is ArtifactStatus.APPROVED and _contract_binding_matches(
                 parse_chapter_contract_binding(existing_body), binding
             ):
@@ -230,17 +287,21 @@ def compile_chapter_contracts(workspace: Workspace) -> list[Path]:
             depends_on=[str(blueprint_path.relative_to(workspace.root))],
             approved_by=blueprint_metadata.approved_by,
         )
-        output.write_text(
-            render_markdown_artifact(
-                metadata, _render_contract_body(chapter, binding, budget_payload, english)
-            ),
-            encoding="utf-8",
-        )
+        pending_outputs[output.relative_to(workspace.root).as_posix()] = render_markdown_artifact(
+            metadata, _render_contract_body(chapter, binding, budget_payload, english)).encode("utf-8")
         outputs.append(output)
-    workspace.append_event(
-        "chapter_contracts_compiled",
-        {"chapter_count": len(outputs), "blueprint": str(blueprint_path.relative_to(workspace.root))},
-    )
+    if pending_outputs:
+        from knowledge_product_workflow.workspace_transactions import (
+            commit_workspace_transaction,
+            prepare_workspace_transaction,
+        )
+        transaction = prepare_workspace_transaction(workspace, pending_outputs,
+            kind="contract_compilation", scope_chapters=[c.chapter_number for c in submission.chapters],
+            input_bindings={blueprint_path.relative_to(workspace.root).as_posix(): _file_sha256(blueprint_path),
+                brief_path.relative_to(workspace.root).as_posix(): _file_sha256(brief_path)},
+            events=[("chapter_contracts_compiled", {"chapter_count": len(outputs),
+                "blueprint": str(blueprint_path.relative_to(workspace.root))})])
+        commit_workspace_transaction(workspace, transaction)
     return outputs
 
 
@@ -264,16 +325,24 @@ def create_chapter_contract(workspace: Workspace, chapter_number: int, title: st
     )
 
 
+@_verification_read(transaction_view=True)
 def create_chapter_draft(workspace: Workspace, chapter_number: int) -> Path:
     """Create an empty, contract-bound chapter input without a generic section template."""
     from knowledge_product_workflow.runtime import authorize_workflow_transition
 
     authorize_workflow_transition(workspace, "draft")
-    contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
-    if chapter_number != 1 and not (workspace.root / "chapters" / "chapter-01-sample.approved").exists():
+    contract_path, chapter = require_current_chapter_contract_in_view(workspace, chapter_number)
+    from knowledge_product_workflow.user_decisions import sample_approval_is_current
+    if chapter_number != 1 and not sample_approval_is_current(workspace):
         raise SampleApprovalRequiredError("创建后续章节草稿前必须先批准第一章样章")
+    from knowledge_product_workflow.change_impact import binding_policy_revision
+    if binding_policy_revision(workspace) == 2 and chapter_number != 1:
+        from knowledge_product_workflow.production_dependencies import build_dependency_plan
+        plan = build_dependency_plan(workspace)
+        if not plan.legacy and chapter_number not in plan.ready_chapters:
+            raise ValueError("本章实际结果依赖尚未就绪；先保留依赖待办，制作其他独立章节")
     draft_path = workspace.root / "chapters" / f"chapter-{chapter_number:02d}.md"
-    if draft_path.exists():
+    if _v_exists(draft_path):
         raise FileExistsError(f"章节草稿已存在：{draft_path}")
     metadata = ArtifactMetadata(
         book_id=workspace.root.name,
@@ -286,7 +355,11 @@ def create_chapter_draft(workspace: Workspace, chapter_number: int) -> Path:
         body = f"# {chapter_number}. {chapter.title}\n"
     else:
         body = f"# {chapter_number}. {chapter.title}\n"
-    draft_path.write_text(render_markdown_artifact(metadata, body), encoding="utf-8")
+    body += "\n<!-- KP_DRAFT_UNFINISHED：补写本章实际导读，完成后移除占位。 -->\n"
+    from knowledge_product_workflow.content_plan import _flatten_outline
+    for section_id, title in _flatten_outline(chapter.section_outline):
+        body += f"\n{'#' * min(6, len(section_id.split('.')))} {section_id} {title}\n\n<!-- KP_DRAFT_UNFINISHED：补写本节真实内容。 -->\n"
+    _v_write_text(draft_path, render_markdown_artifact(metadata, body), encoding="utf-8")
     workspace.append_event("chapter_draft_created", {"chapter_number": chapter_number})
     return draft_path
 
@@ -311,16 +384,16 @@ def amend_chapter_draft(workspace: Workspace, chapter_number: int, reason: str) 
         raise ValueError("章节修订需要简要说明修订原因")
     contract_path, _chapter = require_current_chapter_contract(workspace, chapter_number)
     chapter_path = workspace.root / "chapters" / f"chapter-{chapter_number:02d}.md"
-    if not chapter_path.is_file():
+    if not _v_is_file(chapter_path):
         raise FileNotFoundError(f"修订前缺少第 {chapter_number} 章正文")
-    metadata, body = parse_markdown_artifact(chapter_path.read_text(encoding="utf-8"))
+    metadata, body = parse_markdown_artifact(_v_read_text(chapter_path, encoding="utf-8"))
     if metadata.artifact_type != "chapter":
         raise ValueError("当前章节工件类型无效，无法创建受控修订")
 
     archive = _revision_root(workspace, chapter_number, metadata.version)
-    if archive.exists():
+    if _v_exists(archive):
         raise FileExistsError(f"当前章节版本已存在修订归档：{archive}")
-    archive.mkdir(parents=True, exist_ok=False)
+    _v_mkdir(archive,parents=True,exist_ok=False)
     archived: list[str] = []
     for source in (
         chapter_path,
@@ -329,15 +402,16 @@ def amend_chapter_draft(workspace: Workspace, chapter_number: int, reason: str) 
         workspace.root / "runs" / "editorial" / f"chapter-{chapter_number:02d}-developmental-report.json",
         workspace.root / "chapters" / f"chapter-{chapter_number:02d}-content-plan.yaml",
     ):
-        if source.is_file():
+        if _v_is_file(source):
             destination = archive / source.name
             shutil.copy2(source, destination)
             archived.append(str(source.relative_to(workspace.root)).replace("\\", "/"))
     marker = workspace.root / "chapters" / "chapter-01-sample.approved"
-    if chapter_number == 1 and marker.is_file():
+    from knowledge_product_workflow.change_impact import binding_policy_revision
+    if chapter_number == 1 and _v_is_file(marker) and binding_policy_revision(workspace) == 1:
         marker_archive = archive / marker.name
         shutil.copy2(marker, marker_archive)
-        marker.unlink()
+        _v_unlink(marker)
 
     revision_record = {
         "schema_version": 1,
@@ -348,7 +422,7 @@ def amend_chapter_draft(workspace: Workspace, chapter_number: int, reason: str) 
         "contract": str(contract_path.relative_to(workspace.root)).replace("\\", "/"),
         "archived_artifacts": archived,
     }
-    (archive / "revision.json").write_text(
+    _v_write_text(archive / "revision.json",
         json.dumps(revision_record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     reopened = ArtifactMetadata(
@@ -358,8 +432,8 @@ def amend_chapter_draft(workspace: Workspace, chapter_number: int, reason: str) 
         version=metadata.version + 1,
         depends_on=[str(contract_path.relative_to(workspace.root))],
     )
-    chapter_path.write_text(render_markdown_artifact(reopened, body), encoding="utf-8")
-    if chapter_number == 1:
+    _v_write_text(chapter_path, render_markdown_artifact(reopened, body), encoding="utf-8")
+    if chapter_number == 1 and binding_policy_revision(workspace) == 1:
         invalidate_user_decision(
             workspace,
             UserDecisionTarget.SAMPLE,
@@ -385,12 +459,16 @@ def approve_sample_chapter(workspace: Workspace, approved_by: str) -> Path:
 
     authorize_workflow_transition(workspace, "approve-sample")
     chapter_path = workspace.root / "chapters" / "chapter-01.md"
-    if not chapter_path.exists():
+    if not _v_exists(chapter_path):
         raise FileNotFoundError("批准样章前必须先创建第一章草稿")
     # Keep submission validation separate from contract derivation to avoid an import cycle.
     from knowledge_product_workflow.chapter_compliance import validate_current_chapter_compliance
 
-    findings = validate_current_chapter_compliance(workspace, chapter_path)
+    findings = [item for item in validate_current_chapter_compliance(workspace, chapter_path)
+                if item.severity.value == "blocker"]
+    from knowledge_product_workflow.content_checkpoint import current_content_checkpoint
+    if current_content_checkpoint(workspace, 1) is not None:
+        findings = []
     if findings:
         raise SampleApprovalRequiredError(
             "样章尚未通过当前合约的章节合规校验：" + findings[0].message
@@ -401,10 +479,36 @@ def approve_sample_chapter(workspace: Workspace, approved_by: str) -> Path:
         except ValueError as error:
             raise SampleApprovalRequiredError(str(error)) from error
     marker_path = workspace.root / "chapters" / "chapter-01-sample.approved"
-    if marker_path.exists():
+    from knowledge_product_workflow.change_impact import binding_policy_revision, semantic_digest
+    from knowledge_product_workflow.user_decisions import (
+        prepare_decision_consumption,
+        sample_approval_basis,
+        sample_approval_is_current,
+    )
+    from knowledge_product_workflow.workspace_transactions import (
+        commit_workspace_transaction,
+        prepare_workspace_transaction,
+    )
+    if _v_exists(marker_path) and (binding_policy_revision(workspace) == 1 or sample_approval_is_current(workspace)):
         raise FileExistsError(f"样章审批标记已存在：{marker_path}")
-    marker_path.write_text(f"approved_by: {approved_by}\n", encoding="utf-8")
+    outputs = {}
+    if _v_exists(marker_path):
+        archive = "runs/interaction/history/sample-before-reapproval-" + _file_sha256(marker_path) + ".approved"
+        outputs[archive] = _v_read_bytes(marker_path)
+    events = []
+    decision_id = None
     if managed_user_decisions(workspace):
-        consume_approved_user_decision(workspace, UserDecisionTarget.SAMPLE)
-    workspace.append_event("sample_chapter_approved", {"approved_by": approved_by})
+        decision = require_approved_user_decision(workspace, UserDecisionTarget.SAMPLE)
+        decision_id = decision.decision_id
+        values, events = prepare_decision_consumption(workspace, UserDecisionTarget.SAMPLE)
+        outputs.update(values)
+    marker_value = f"approved_by: {approved_by}\n"
+    if binding_policy_revision(workspace) == 2:
+        marker_value = json.dumps({"approved_by": approved_by, "decision_id": decision_id,
+            "basis_sha256": semantic_digest(sample_approval_basis(workspace))}, ensure_ascii=False)
+    outputs[marker_path.relative_to(workspace.root).as_posix()] = marker_value.encode("utf-8")
+    events.append(("sample_chapter_approved", {"approved_by": approved_by}))
+    transaction = prepare_workspace_transaction(workspace, outputs, kind="approval_mapping",
+        scope_chapters=[1], shared_paths=list(outputs), events=events)
+    commit_workspace_transaction(workspace, transaction)
     return marker_path

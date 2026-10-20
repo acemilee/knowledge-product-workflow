@@ -11,6 +11,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    unlink as _v_unlink,
+)
+from knowledge_product_workflow.verification_context import (
+    write_open as _v_write_open,
+)
+from knowledge_product_workflow.verification_context import (
+    write_text as _v_write_text,
+)
+
 WORKSPACE_DIRECTORIES = ("planning", "research", "chapters", "delivery", "runs")
 WORKSPACE_OPTIONAL_DIRECTORIES = ("assets",)
 _APPROVAL_PROFILE_FILE = "approval-profile.json"
@@ -23,23 +36,23 @@ class Workspace:
     root: Path
 
     @classmethod
-    def create(cls, root: Path, book_id: str) -> Workspace:
+    def create(cls, root: Path, book_id: str, *, current_policy: bool = False,
+               binding_policy_revision: int = 1) -> Workspace:
         """Create an empty workspace without overwriting an existing run."""
         workspace = cls(root=(root.expanduser() / book_id).resolve())
-        if workspace.root.exists():
+        if _v_exists(workspace.root):
             raise FileExistsError(f"书稿工作区已存在：{workspace.root}")
         for directory in (*WORKSPACE_DIRECTORIES, *WORKSPACE_OPTIONAL_DIRECTORIES):
-            (workspace.root / directory).mkdir(parents=True, exist_ok=False)
+            _v_mkdir(workspace.root / directory,parents=True,exist_ok=False)
         (workspace.root / "runs" / "events.jsonl").touch(exist_ok=False)
         workspace.append_event("workspace_initialized", {"book_id": book_id})
         # A workspace created by the current CLI is never a legacy workspace.  Keep
         # this control-plane marker separate from reader-facing book artifacts.
         from knowledge_product_workflow.runtime import initialize_new_orchestration
 
-        initialize_new_orchestration(workspace)
-        from knowledge_product_workflow.token_budget import initialize_token_budget
+        initialize_new_orchestration(workspace, current_policy=current_policy,
+                                     binding_policy_revision=binding_policy_revision)
 
-        initialize_token_budget(workspace)
         return workspace
 
     @classmethod
@@ -61,14 +74,14 @@ class Workspace:
             "payload": payload,
         }
         event_path = self.root / "runs" / "events.jsonl"
-        with event_path.open("a", encoding="utf-8") as handle:
+        with _v_write_open(event_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=True) + "\n")
         return event_path
 
     def approval_identity(self) -> str | None:
         """Return the one locally configured human approval identity, if present."""
         profile_path = self.root / "runs" / _APPROVAL_PROFILE_FILE
-        if not profile_path.is_file():
+        if not _v_is_file(profile_path):
             return None
         try:
             profile = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -85,7 +98,7 @@ class Workspace:
         if not normalized:
             raise ValueError("审批身份不能为空")
         profile_path = self.root / "runs" / _APPROVAL_PROFILE_FILE
-        profile_path.write_text(
+        _v_write_text(profile_path,
             json.dumps({"approval_identity": normalized}, ensure_ascii=True, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -106,7 +119,7 @@ class Workspace:
             yield
         finally:
             try:
-                lock_path.unlink()
+                _v_unlink(lock_path)
             except FileNotFoundError:
                 pass
 

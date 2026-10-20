@@ -34,7 +34,7 @@ from knowledge_product_workflow.workflows.authoring import (
     create_chapter_draft,
 )
 from knowledge_product_workflow.workflows.product_brief import create_product_brief
-from knowledge_product_workflow.workflows.validation import run_validation
+from knowledge_product_workflow.workflows.validation import run_delivery_validation, run_validation
 from knowledge_product_workflow.workspace import Workspace
 from tests.blueprint_support import submit_test_blueprint, submit_test_chapter
 
@@ -168,6 +168,8 @@ def test_ai_agent_tutorial_reaches_an_auditable_delivery(tmp_path: Path) -> None
     markdown_path = assemble_book(workspace)
     pdf_path = workspace.root / "delivery" / "book.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\nfixture\n")
+    _, delivery_report = run_delivery_validation(workspace)
+    assert delivery_report.publishable, delivery_report.findings
     manifest_path = create_delivery_manifest(workspace, markdown_path, pdf_path)
 
     assert manifest_path.exists()
@@ -199,6 +201,9 @@ def test_repeated_content_or_trace_leak_blocks_publish(tmp_path: Path) -> None:
     markdown_path = assemble_book(workspace)
     pdf_path = workspace.root / "delivery" / "book.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\nfixture\n")
+
+    _, delivery_report = run_delivery_validation(workspace)
+    assert not delivery_report.publishable
 
     assert {"DUPLICATE_CONTENT_DETECTED", "INTERNAL_TRACE_LEAKED"} <= {
         finding.code for finding in report.findings

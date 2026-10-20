@@ -9,6 +9,14 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from knowledge_product_workflow.quality import QualityFinding, Severity
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    read_text as _v_read_text,
+)
+from knowledge_product_workflow.verification_context import (
+    write_open as _v_write_open,
+)
 
 
 class AssumptionImpact(StrEnum):
@@ -43,17 +51,17 @@ class AssumptionLedgerEntry(BaseModel):
 
 def append_assumption_entry(path: Path, entry: AssumptionLedgerEntry) -> None:
     """Append a decision revision; the latest row for an ID is authoritative."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+    _v_mkdir(path.parent,parents=True,exist_ok=True)
+    with _v_write_open(path, "a", encoding="utf-8") as handle:
         handle.write(entry.model_dump_json() + "\n")
 
 
 def latest_assumptions(path: Path) -> dict[str, AssumptionLedgerEntry]:
     """Read the latest append-only state for each assumption identifier."""
     latest: dict[str, AssumptionLedgerEntry] = {}
-    if not path.is_file():
+    if not _v_is_file(path):
         return latest
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _v_read_text(path, encoding="utf-8").splitlines():
         if line.strip():
             entry = AssumptionLedgerEntry.model_validate_json(line)
             latest[entry.assumption_id] = entry

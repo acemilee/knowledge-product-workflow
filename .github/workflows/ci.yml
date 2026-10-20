@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: windows-latest
@@ -33,8 +37,8 @@ jobs:
       - name: Check lockfile
         run: uv lock --check
 
-      - name: Run Ruff
-        run: uv run ruff check src tests
+      - name: Check Ruff against approved fixed baseline
+        run: uv run python .github/scripts/check_ruff_baseline.py
 
       - name: Run tests
-        run: uv run pytest -q
+        run: uv run pytest -q -ra

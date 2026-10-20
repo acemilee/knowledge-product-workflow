@@ -1,0 +1,27 @@
+{
+  "style_id": "kp-editorial-illustration",
+  "revision": 2,
+  "rule_set": "kp-illustration-style-2",
+  "anchor_sha256": "1a6c6888f72c6b1c014a2bae6902f04a3e8f99fa81e023cb150013fe4074a414",
+  "families": [
+    "architecture",
+    "hierarchy",
+    "flow"
+  ],
+  "aspect_ratio": 1.777,
+  "role_glyph_height_ratios": {
+    "title": 0.06801275239107332,
+    "region": 0.053134962805526036,
+    "node": 0.04357066950053135,
+    "description": 0.03294367693942614,
+    "conclusion": 0.044633368756641874
+  },
+  "review_deviation": 0.15,
+  "block_deviation": 0.25,
+  "minimum_glyph_pt": 9.0,
+  "measurement_source": "批准母版可见字框的人工像素估测；不是字体文件或排版字号",
+  "calibration": "单行CJK字框只读暗像素量测，区域排除图标与外框；原认可母版和中性候选采用同协议。用户最终确认候选待定。",
+  "visual_language": "深色规整、轻微笔性教程字迹；浅彩分区、细线轮廓、小型线性图标；留白有用途。禁止粗笔书法、拟物3D、卡通主角、贴纸彩带、标题下划线、星星和爆炸形。风格参考为中性母版；配色只按当前冻结配色卡及节点/区域映射，不复制母版的灰色填充或题材。品牌强调使用当前批准主色。",
+  "anchor_file": "style-anchor-neutral.png",
+  "approval_state": "candidate"
+}

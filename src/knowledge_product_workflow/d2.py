@@ -6,9 +6,10 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from .workspace_scratch import create_workspace_scratch
 
 
 @dataclass(frozen=True)
@@ -139,24 +140,31 @@ def resolve_diagram_browser() -> BrowserResolution:
     return BrowserResolution(False, None, None, None, tuple(failed))
 
 
-def _svg_viewport(svg_path: Path) -> tuple[int, int]:
+def _svg_viewport(svg_path: Path, *, tight: bool = False) -> tuple[int, int]:
     """Constrain screenshots to the D2 SVG viewBox without parsing untrusted XML."""
     text = svg_path.read_text(encoding="utf-8")
     match = re.search(r'viewBox="\s*0\s+0\s+([0-9.]+)\s+([0-9.]+)\s*"', text)
     if match is None:
         return 1600, 1200
+    if tight:
+        return tuple(max(64, min(4096, round(float(value)))) for value in match.groups())
     width = max(640, min(4096, round(float(match.group(1)) + 48)))
     height = max(480, min(4096, round(float(match.group(2)) + 48)))
     return width, height
 
 
-def render_svg_with_browser(browser: Path, svg_path: Path, pdf_path: Path, png_path: Path) -> None:
+def render_svg_with_browser(browser: Path, svg_path: Path, pdf_path: Path, png_path: Path, *, font_css: str | None = None) -> None:
     """Convert a D2-generated local SVG to PDF and PNG using an already installed browser.
 
     The wrapper contains no remote content and browser background networking is disabled. This avoids
     D2's Playwright bootstrap while keeping D2 as the only diagram-layout and SVG producer.
     """
-    width, height = _svg_viewport(svg_path)
+    width, height = _svg_viewport(svg_path, tight=bool(font_css))
+    from .svg_export import export_svg, resolve_svg_compiler
+    compiler = resolve_svg_compiler()
+    if compiler is not None:
+        export_svg(compiler, svg_path, pdf_path, png_path, width, height, font_css=font_css)
+        return
     html_path = svg_path.with_suffix(".render.html")
     html_path.write_text(
         "<!doctype html><html><head><meta charset=\"utf-8\"><style>"
@@ -168,7 +176,11 @@ def render_svg_with_browser(browser: Path, svg_path: Path, pdf_path: Path, png_p
         + "\"></body></html>\n",
         encoding="utf-8",
     )
-    profile = Path(tempfile.mkdtemp(prefix="kp-diagram-browser-", dir=svg_path.parent))
+    if font_css:
+        html_path.write_text("<!doctype html><html><head><meta charset=\"utf-8\"><style>"
+            + f"@page{{size:{width}px {height}px;margin:0}}html,body{{margin:0;padding:0;overflow:hidden}}"
+            + f"body>svg{{display:block;width:{width}px!important;height:{height}px!important}}" + font_css + "</style></head><body>" + svg_path.read_text(encoding="utf-8") + "</body></html>",encoding="utf-8")
+    profile = create_workspace_scratch(svg_path.parent, prefix="kp-diagram-browser-")
     base = [
         str(browser),
         "--headless=new",
@@ -181,6 +193,7 @@ def render_svg_with_browser(browser: Path, svg_path: Path, pdf_path: Path, png_p
         "--no-first-run",
         "--allow-file-access-from-files",
         "--hide-scrollbars",
+        "--virtual-time-budget=2000",
         f"--user-data-dir={profile}",
         f"--window-size={width},{height}",
     ]
@@ -211,3 +224,18 @@ def render_svg_with_browser(browser: Path, svg_path: Path, pdf_path: Path, png_p
         except FileNotFoundError:
             pass
         shutil.rmtree(profile, ignore_errors=True)
+
+
+def diagram_font_css() -> str:
+    """利用已安装fontconfig定位字体，显式载入浏览器；不安装字体。"""
+    names = [("kpDiagramLatin", "Inter", "400"), ("kpDiagramLatin", "Inter:style=SemiBold", "600"),
+             ("kpDiagramCJK", "PingFang SC", "400"), ("kpDiagramCJK", "PingFang SC:style=Semibold", "600")]
+    css=[]
+    for family,query,weight in names:
+        result=subprocess.run(["fc-match","-f","%{file}|%{family}",query],capture_output=True,text=True,encoding="utf-8",timeout=8,check=True)
+        filename,actual=result.stdout.split("|",1)
+        if query.split(":")[0].lower() not in actual.lower() or not Path(filename).is_file():
+            raise ValueError("矢量首选字体未可用；不能静默回退")
+        css.append(f'@font-face{{font-family:{family};src:url("{Path(filename).as_uri()}");font-weight:{weight}}}')
+    css.append('svg text,svg tspan{font-family:kpDiagramLatin,kpDiagramCJK!important}')
+    return "\n".join(css)

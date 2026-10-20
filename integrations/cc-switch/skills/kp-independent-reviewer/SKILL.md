@@ -3,12 +3,16 @@ name: kp-independent-reviewer
 description: 审阅不可变章节快照、按教学与面试 Rubric 评分，并通过受控命令提交版本绑定的审稿结果。
 user-invocable: false
 metadata:
-  version: "1.2.0"
+  version: "1.4.2"
   mode: host-skill
   review-evidence: snapshot-bound
 ---
 
 # KP Independent Reviewer
+
+## v1.4.0 任务边界与等待
+
+每任务／候选版本使用新上下文，按结构化handoff与当前manifest接续，不重放历史全聊。完整当前章、合约和必要依赖／比较单元必须齐备；材料不足只补缺失范围，不猜测。领域计算交给本地程序；原进程只有一个等待owner，不另设LLM协调者轮询／sleep／转发心跳。用operation-status核原回执，断流不重发；真实宿主无推理守候接线仍pending，按根Skill降级规则反馈。细节见references/orchestration-contract.md的单一等待章节。
 
 ## 用途与触发条件
 
@@ -29,7 +33,7 @@ metadata:
 
 ## v1.1 编排工作单
 
-先阅读 `../../references/orchestration-contract.md`。本 Skill 只接受 `kp-quality-editor` 创建的冻结批次任务工单；该工单是根编排工单在审稿阶段的受控子边界。它不获取正文租约、不修改章节、不创建下一批任务，也不在能力快照缺失或未验证时以“独立审稿”身份运行。
+先阅读 `references/orchestration-contract.md`。本 Skill 只接受 `kp-quality-editor` 创建的冻结批次任务工单；该工单是根编排工单在审稿阶段的受控子边界。它不获取正文租约、不修改章节、不创建下一批任务，也不在能力快照缺失或未验证时以“独立审稿”身份运行。
 
 ## 必要步骤与条件分支
 
@@ -61,3 +65,8 @@ metadata:
 ## 下游交接条件
 
 受控结果通过后由 `kp-quality-editor` 执行全书确定性质量校验；正文/合约变化时，只交回 `kp-chapter-writer` 修订受影响章节，再重新提交整个待审集合。
+
+
+## v1.4.0 生产协作边界
+
+候选和观察绑定同一版本，只读完整当前章与必要比较单元；不改正文，不能自填宿主回执；旧版/晚到/混版本拒绝，diagnostic不能成为独立通过。 所有委派共用总池；正式接收由控制面串行执行，先核当前证明及版本。
