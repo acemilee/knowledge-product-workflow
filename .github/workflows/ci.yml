@@ -40,5 +40,25 @@ jobs:
       - name: Check Ruff against approved fixed baseline
         run: uv run python .github/scripts/check_ruff_baseline.py
 
+      - name: Prepare pinned SVG compiler
+        shell: pwsh
+        run: |
+          $archivePath = Join-Path $env:RUNNER_TEMP 'kp-typst-0.15.1.zip'
+          $compilerFolder = Join-Path $env:RUNNER_TEMP 'kp-typst-0.15.1'
+          Invoke-WebRequest -Uri 'https://github.com/typst/typst/releases/download/v0.15.1/typst-x86_64-pc-windows-msvc.zip' -OutFile $archivePath -TimeoutSec 30
+          $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne '19ce3551153c2fe7ee9fa2f95208310c8f4d3209fedb699e0333faf8913f6736') { throw 'SVG compiler SHA-256 mismatch' }
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $compilerFolder
+          $compilerFiles = @(Get-ChildItem -LiteralPath $compilerFolder -Recurse -File -Filter typst.exe)
+          if ($compilerFiles.Count -ne 1) { throw 'Expected one verified SVG compiler' }
+          $compilerExe = $compilerFiles[0].FullName
+          $compilerVersion = & $compilerExe --version
+          if ($LASTEXITCODE -ne 0 -or $compilerVersion -notmatch '^typst 0\.15\.1(?: |$)') { throw 'SVG compiler version mismatch' }
+          Write-Output $compilerVersion
+          "KP_SVG_COMPILER_PATH=$compilerExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify native SVG exporter
+        run: uv run pytest -q tests/test_single_loop_regressions.py::test_actual_svg_pdf_does_not_break_source_identifier
+
       - name: Run tests
         run: uv run pytest -q -ra
