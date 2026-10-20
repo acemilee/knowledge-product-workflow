@@ -1,0 +1,121 @@
+{
+  "count": 19,
+  "scope": "src tests",
+  "comparison": "multiset relative file/rule/message/source statement; duplicates retained",
+  "signatures": [
+    [
+      "src/knowledge_product_workflow/humanize.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "targets.extend(re.findall(r\"^ {0,3}\\[[^\\]]+\\]:\\s*(\\S+)\", text, re.M))"
+    ],
+    [
+      "src/knowledge_product_workflow/humanize.py",
+      "FURB167",
+      "Use of regular expression alias `re.S`",
+      "frontmatter = re.match(r\"\\A---\\n.*?\\n---(?:\\n|$)\", markdown, re.S)"
+    ],
+    [
+      "src/knowledge_product_workflow/humanize.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "\"headings\": re.findall(r\"^ {0,3}#{1,6} .+$\", outside, re.M),"
+    ],
+    [
+      "src/knowledge_product_workflow/humanize.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "\"ordered_steps\": re.findall(r\"^([ \\t]*\\d+[.)])[ \\t]+\", prose, re.M),"
+    ],
+    [
+      "src/knowledge_product_workflow/humanize.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "\"component_boundaries\": re.findall(r\"^[ \\t]*:{3,}(?:[ \\t]*\\{[^\\n]*\\})?[ \\t]*$\", prose, re.M),"
+    ],
+    [
+      "src/knowledge_product_workflow/pdf_visual.py",
+      "I001",
+      "Import block is un-sorted or un-formatted",
+      "from knowledge_product_workflow.user_decisions import require_pdf_scope"
+    ],
+    [
+      "src/knowledge_product_workflow/visual_audit.py",
+      "TRY004",
+      "Prefer `TypeError` exception for invalid type",
+      "raise RuntimeError(f\"第 {number} 页清晰预览超过 30 秒；已保留完成页与缺项，先诊断再补页。\") from error"
+    ],
+    [
+      "src/knowledge_product_workflow/workflows/curriculum.py",
+      "ISC004",
+      "Unparenthesized implicit string concatenation in collection",
+      "\"production=create且声明relation_kind时，diagram_type须精确匹配relation_constraints；\""
+    ],
+    [
+      "tests/fixtures/humanize/upstream_check_structure.py",
+      "FURB167",
+      "Use of regular expression alias `re.S`",
+      "frontmatter = re.match(r\"\\A---\\n.*?\\n---\\n\", text, re.S)"
+    ],
+    [
+      "tests/fixtures/humanize/upstream_check_structure.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "\"fenced_code\": re.findall(r\"^```[^\\n]*\\n.*?^```[ \\t]*$\", text, re.M | re.S),"
+    ],
+    [
+      "tests/fixtures/humanize/upstream_check_structure.py",
+      "FURB167",
+      "Use of regular expression alias `re.S`",
+      "\"fenced_code\": re.findall(r\"^```[^\\n]*\\n.*?^```[ \\t]*$\", text, re.M | re.S),"
+    ],
+    [
+      "tests/fixtures/humanize/upstream_check_structure.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "\"headings\": re.findall(r\"^#{1,6} .+$\", text, re.M),"
+    ],
+    [
+      "tests/fixtures/humanize/upstream_check_structure.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "\"table_rows\": re.findall(r\"^\\|.*\\|$\", text, re.M),"
+    ],
+    [
+      "tests/fixtures/humanize/upstream_check_structure.py",
+      "FURB167",
+      "Use of regular expression alias `re.M`",
+      "\"ordered_steps\": re.findall(r\"^\\d+\\. .+$\", text, re.M),"
+    ],
+    [
+      "tests/test_body_assertion_context_v134.py",
+      "RUF059",
+      "Unpacked variable `workspace` is never used",
+      "workspace, source, template = scenario_fixture(tmp_path)"
+    ],
+    [
+      "tests/test_body_assertion_context_v134.py",
+      "RUF059",
+      "Unpacked variable `source` is never used",
+      "workspace, source, _ = scenario_fixture(tmp_path)"
+    ],
+    [
+      "tests/test_diagram_preflight_o11_v134.py",
+      "PLR0402",
+      "Use `from knowledge_product_workflow import diagrams` in lieu of alias",
+      "import knowledge_product_workflow.diagrams as diagrams"
+    ],
+    [
+      "tests/test_diagram_preflight_o11_v134.py",
+      "RUF059",
+      "Unpacked variable `semantic` is never used",
+      "workspace, source, semantic, data = _fixture(tmp_path)"
+    ],
+    [
+      "tests/test_pagination_profile_v134.py",
+      "C408",
+      "Unnecessary `dict()` call (rewrite as a literal)",
+      "return dict(subtitle=\"学习主线\", cover_label=\"教程\", footer_label=\"教程\","
+    ]
+  ]
+}
