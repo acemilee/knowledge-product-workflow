@@ -24,7 +24,11 @@ from knowledge_product_workflow.presentation import (
     load_or_create_publication_profile,
     preview_publication_update,
 )
-from knowledge_product_workflow.publishing import assemble_book, create_delivery_manifest
+from knowledge_product_workflow.publishing import (
+    assemble_book,
+    create_delivery_manifest,
+    create_quarto_source,
+)
 from knowledge_product_workflow.quality import Severity
 from knowledge_product_workflow.quality_exceptions import (
     ControlledExceptionRequest,
@@ -39,7 +43,7 @@ from knowledge_product_workflow.workflows.authoring import (
     require_current_chapter_contract,
 )
 from knowledge_product_workflow.workflows.product_brief import create_product_brief
-from knowledge_product_workflow.workflows.validation import run_validation
+from knowledge_product_workflow.workflows.validation import run_delivery_validation, run_validation
 from knowledge_product_workflow.workspace import Workspace
 from tests.blueprint_support import submit_test_blueprint, submit_test_chapter
 
@@ -73,8 +77,35 @@ def _assembled_workspace(tmp_path: Path) -> Workspace:
     return workspace
 
 
+@pytest.mark.parametrize("filename", ["knowledge-book-components.lua", "knowledge-book-style.tex"])
+def test_stale_rendering_resources_can_be_repaired_without_metadata_or_text_changes(tmp_path: Path, filename: str) -> None:
+    workspace = _assembled_workspace(tmp_path)
+    markdown = workspace.root / "delivery/book.md"
+    create_quarto_source(workspace, markdown)
+    current = load_or_create_publication_profile(workspace, language="zh-CN")
+    update = PublicationUpdateInput(body_font_size=current.body_font_size, version_bump="none")
+    with pytest.raises(ValueError, match="没有产生任何可见变化"):
+        preview_publication_update(workspace, update, language="zh-CN")
+    component = workspace.root / "delivery" / filename
+    canonical = component.read_bytes()
+    bodies = {p.name: p.read_bytes() for p in (workspace.root / "chapters").glob("*.md")}
+    component.write_text("-- stale rendering resources\n", encoding="utf-8")
+    _, candidate = preview_publication_update(workspace, update, language="zh-CN")
+    assert candidate.changed_fields == ["rendering_resources"]
+    applied = apply_publication_update(workspace, "用户")
+    assert applied.body_font_size == current.body_font_size
+    assert applied.edition_label == current.edition_label
+    create_quarto_source(workspace, markdown)
+    assert component.read_bytes() == canonical
+    assert bodies == {p.name: p.read_bytes() for p in (workspace.root / "chapters").glob("*.md")}
+    with pytest.raises(ValueError, match="没有产生任何可见变化"):
+        preview_publication_update(workspace, update, language="zh-CN")
+
+
 def test_publication_update_separates_cover_footer_and_semver(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "guide")
+    from knowledge_product_workflow.workflows.product_brief import create_product_brief
+    create_product_brief(workspace, "出版字段更新")
     profile = load_or_create_publication_profile(workspace, language="zh-CN", today=date(2020, 1, 1))
     assert profile.cover_label == "知识产品工作流"
     assert profile.footer_label == "知识产品工作流"
@@ -99,6 +130,8 @@ def test_publication_update_separates_cover_footer_and_semver(tmp_path: Path) ->
 
 def test_publication_update_can_change_a_supported_body_font_size(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "guide")
+    from knowledge_product_workflow.workflows.product_brief import create_product_brief
+    create_product_brief(workspace, "出版字段更新")
     profile = load_or_create_publication_profile(workspace, language="zh-CN", today=date(2026, 8, 3))
     assert profile.body_font_size == 12
 
@@ -343,6 +376,8 @@ def test_valid_controlled_exception_is_disclosed_in_the_delivery_manifest(tmp_pa
     assert report.publishable is True
     assert [finding.code for finding in report.findings] == ["CONTROLLED_EXCEPTION_APPLIED"]
     markdown = assemble_book(workspace)
+    _, delivery_report = run_delivery_validation(workspace)
+    assert delivery_report.publishable
     manifest = yaml.safe_load(create_delivery_manifest(workspace, markdown, None).read_text(encoding="utf-8"))
     assert len(manifest["controlled_exceptions"]) == 1
     exception = manifest["controlled_exceptions"][0]

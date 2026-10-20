@@ -1,12 +1,23 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from knowledge_product_workflow.cli import app
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
-from knowledge_product_workflow.runtime import inspect_workflow, read_orchestration_work_order
-from knowledge_product_workflow.workflows.product_brief import parse_detail_constraints
+from knowledge_product_workflow.presentation import load_or_create_publication_profile
+from knowledge_product_workflow.runtime import (
+    OrchestrationWorkOrderError,
+    inspect_workflow,
+    read_orchestration_work_order,
+    validate_orchestration_work_order,
+)
+from knowledge_product_workflow.workflows.product_brief import (
+    parse_detail_constraints,
+    parse_presentation_overrides,
+)
 from knowledge_product_workflow.workspace import Workspace
 
 
@@ -57,6 +68,8 @@ def test_structured_brief_writes_preview_then_requires_explicit_confirmation(tmp
     assert preview_payload["target_audience"] == "准备 AI 产品经理求职的理工科毕业生"
     assert preview_payload["detail_constraints"]["audience_level"] == "expert"
     assert preview_payload["detail_constraints"]["delivery_format"] == "both"
+    assert preview_payload["brand_palette"]["accent"] == "B65E2B"
+    assert "设计示意" in preview_payload["design_sample"]
 
     confirmed = runner.invoke(app, [*arguments, "--confirm"])
 
@@ -67,6 +80,27 @@ def test_structured_brief_writes_preview_then_requires_explicit_confirmation(tmp
     assert (constraints.word_min, constraints.word_target, constraints.word_max) == (30000, 40000, 50000)
     assert constraints.audience_level.value == "expert"
     assert constraints.delivery_format.value == "both"
+    assert parse_presentation_overrides(body).brand_color_intent == "橙色基调"
+
+
+def test_explicit_purple_brand_is_bound_in_the_same_brief_confirmation(tmp_path: Path) -> None:
+    workspace = Workspace.create(tmp_path, "guide")
+    runner = CliRunner()
+    args = [
+        "brief", "紫色知识指南", "--workspace", str(workspace.root), "--no-interactive",
+        "--target-audience", "工程师", "--audience-level", "进阶", "--brand-color", "紫色基调",
+    ]
+    preview = runner.invoke(app, args)
+    assert preview.exit_code == 0, preview.output
+    payload = json.loads((workspace.root / "runs" / "brief-preview.json").read_text(encoding="utf-8"))
+    assert payload["brand_palette"]["accent"] == "6847A5"
+    confirmed = runner.invoke(app, [*args, "--confirm"])
+    assert confirmed.exit_code == 0, confirmed.output
+    _, body = parse_markdown_artifact(_brief_path(workspace).read_text(encoding="utf-8"))
+    overrides = parse_presentation_overrides(body)
+    assert overrides is not None and overrides.brand_color_intent == "紫色基调"
+    profile = load_or_create_publication_profile(workspace, language="zh-CN", overrides=overrides)
+    assert profile.palette.accent == "6847A5"
 
 
 def test_structured_json_accepts_chinese_values_and_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -298,6 +332,11 @@ def test_confirm_replaces_an_unapproved_brief_draft_without_requiring_a_new_work
 
     first = runner.invoke(app, [*base_arguments, "--target-pages", "10-15", "--confirm"])
     assert first.exit_code == 0, first.output
+    initial = inspect_workflow(workspace)
+    assert initial.current_work_order is not None
+    original_order = read_orchestration_work_order(workspace, initial.current_work_order)
+    assert original_order.stage == "brief_awaiting_approval"
+    assert original_order.lifecycle.value == "pending"
 
     corrected = runner.invoke(app, [*base_arguments, "--target-pages", "10+", "--confirm"])
     assert corrected.exit_code == 0, corrected.output
@@ -323,10 +362,25 @@ def test_confirm_replaces_an_unapproved_brief_draft_without_requiring_a_new_work
         for order in orders
         if order.stage == "brief_awaiting_approval" and order.lifecycle.value == "superseded"
     ]
-    assert len(superseded) == 1
-    assert superseded[0].completion_proof is not None
+    assert original_order.work_order_id in {order.work_order_id for order in superseded}
+    for order in superseded:
+        assert order.completion_proof is not None
+        assert order.completion_proof.transition == "superseded"
+        assert order.completion_proof.reason
+        assert order.completion_proof.input_manifest_sha256 == order.input_manifest_sha256
+    retired = read_orchestration_work_order(workspace, original_order.work_order_id)
+    assert retired.input_manifest_sha256 == original_order.input_manifest_sha256
+    with pytest.raises(OrchestrationWorkOrderError, match="已过期|已完成|已取消"):
+        validate_orchestration_work_order(workspace, original_order.work_order_id, command="approve")
     current = inspect_workflow(workspace)
     assert current.current_work_order is not None
     replacement = read_orchestration_work_order(workspace, current.current_work_order)
     assert replacement.stage == "brief_awaiting_approval"
     assert replacement.lifecycle.value == "pending"
+    live = [order for order in orders if order.lifecycle.value in {"pending", "active"}]
+    assert [order.work_order_id for order in live] == [replacement.work_order_id]
+    bound_inputs = {entry.path: entry.sha256 for entry in replacement.inputs}
+    for relative_path in ("planning/product-brief.md", "runs/request-contract.yaml"):
+        assert bound_inputs[relative_path] == sha256((workspace.root / relative_path).read_bytes()).hexdigest()
+    validated = validate_orchestration_work_order(workspace, replacement.work_order_id, command="approve")
+    assert validated.work_order_id == replacement.work_order_id

@@ -7,7 +7,7 @@ import re
 from enum import StrEnum
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 
 
 class AudienceLevel(StrEnum):
@@ -40,6 +40,7 @@ class PageConstraintMode(StrEnum):
     MINIMUM = "minimum"
     RANGE = "range"
     EXACT = "exact"
+    PREFERRED = "preferred"
 
 
 class PageScope(StrEnum):
@@ -151,9 +152,33 @@ class PageConstraint(BaseModel):
     minimum: int | None = Field(default=None, gt=0)
     target: int | None = Field(default=None, gt=0)
     maximum: int | None = Field(default=None, gt=0)
+    preferred_minimum: int | None = Field(default=None, gt=0)
+    preferred_maximum: int | None = Field(default=None, gt=0)
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_shape(self, handler):
+        value = handler(self)
+        if self.mode is not PageConstraintMode.PREFERRED:
+            value.pop("preferred_minimum", None)
+            value.pop("preferred_maximum", None)
+        return value
 
     @model_validator(mode="after")
     def validate_shape(self) -> Self:
+        if self.mode is PageConstraintMode.PREFERRED:
+            if self.preferred_minimum is None or self.preferred_maximum is None:
+                raise ValueError("偏好页数须同时提供preferred_minimum和preferred_maximum")
+            if self.preferred_minimum > self.preferred_maximum:
+                raise ValueError("偏好页数下限不能大于上限")
+            if ((self.minimum is not None and self.preferred_minimum < self.minimum)
+                    or (self.maximum is not None and self.preferred_maximum > self.maximum)):
+                raise ValueError("偏好区间必须位于硬边界内")
+            self.target = self.target or (self.preferred_minimum + self.preferred_maximum) // 2
+            if not self.preferred_minimum <= self.target <= self.preferred_maximum:
+                raise ValueError("篇幅目标须位于偏好区间内")
+            return self
+        if self.preferred_minimum is not None or self.preferred_maximum is not None:
+            raise ValueError("偏好字段只用于preferred模式，不能静默改变旧硬范围")
         if self.mode is PageConstraintMode.UNBOUNDED:
             if any(value is not None for value in (self.minimum, self.target, self.maximum)):
                 raise ValueError("无限页数约束不能同时提供页数边界")
@@ -178,7 +203,18 @@ class PageConstraint(BaseModel):
     @property
     def is_writing_target(self) -> bool:
         """Only exact/range choices may become an initial chapter allocation target."""
-        return self.mode in {PageConstraintMode.EXACT, PageConstraintMode.RANGE}
+        return self.mode in {PageConstraintMode.EXACT, PageConstraintMode.RANGE, PageConstraintMode.PREFERRED}
+
+    def assess(self, pages: int) -> str:
+        """硬超限与首选偏差分开；不改变旧exact/range含义。"""
+        if pages < 0:
+            raise ValueError("实际页数不能小于零")
+        if ((self.minimum is not None and pages < self.minimum)
+                or (self.maximum is not None and pages > self.maximum)):
+            return "hard_violation"
+        if self.mode is PageConstraintMode.PREFERRED:
+            return "preferred_met" if self.preferred_minimum <= pages <= self.preferred_maximum else "preferred_deviation"
+        return "hard_met"
 
 
 # Kept as a source-compatible name for integrations that imported the former type.
@@ -191,6 +227,7 @@ def _normalized_page_text(value: str) -> str:
         .lower()
         .replace("－", "-")
         .replace("—", "-")
+        .replace("–", "-")
         .replace("～", "-")
         .replace("≥", ">=")
         .replace("＋", "+")
@@ -201,7 +238,7 @@ def parse_page_budget(value: int | str) -> PageConstraint:
     """Parse exact, range, lower-bound, unlimited, and body-only page requests."""
     if isinstance(value, int):
         return PageConstraint(mode=PageConstraintMode.EXACT, target=value)
-    text = _normalized_page_text(value)
+    text = _normalized_page_text(value).rstrip("。.")
     if not text:
         raise ValueError("目标页数不能为空；可使用 15、10-20、至少10页或不限页数")
     scope = (
@@ -214,6 +251,15 @@ def parse_page_budget(value: int | str) -> PageConstraint:
         "",
         text,
     ).strip()
+    preferred = re.fullmatch(
+        r"(?:目标(?:为|是)?|首选|建议)\s*(\d+)\s*(?:-|至|到)\s*(\d+)\s*页?"
+        r"(?:\s*[，,;；、]\s*(?:最多|不超过|上限)\s*(\d+)\s*页?)?"
+        r"(?:\s*[，,;；、]\s*(?:封面(?:和|与)?目录计入(?:页数)?|含封面(?:和|与)?目录))?", text)
+    if preferred:
+        lower, upper, maximum = preferred.groups()
+        return PageConstraint(mode=PageConstraintMode.PREFERRED, scope=scope,
+                              preferred_minimum=int(lower), preferred_maximum=int(upper),
+                              maximum=int(maximum) if maximum else None)
     if any(marker in text for marker in ("不限", "无上限", "unbounded", "unlimited")):
         return PageConstraint(mode=PageConstraintMode.UNBOUNDED, scope=scope)
     lower = re.fullmatch(
@@ -241,6 +287,33 @@ def parse_page_budget(value: int | str) -> PageConstraint:
     if exact is None:
         raise ValueError("目标页数应为 15、10-20、至少10页、10+、页数无上限或正文15页")
     return PageConstraint(mode=PageConstraintMode.EXACT, scope=scope, target=int(exact.group(1)))
+
+
+def validate_source_page_intent(request: str, constraints) -> None:
+    """Check explicit source clauses; this locates contradictions, not general NLP."""
+    source = _normalized_page_text(request)
+    counts_frontmatter = bool(re.search(r"封面(?:和|与)?目录.{0,4}计入|(?<!不)含封面(?:和|与)?目录", source))
+    declared = constraints.page_constraint if constraints else None
+    if counts_frontmatter and declared and declared.scope is PageScope.BODY_ONLY:
+        raise ValueError("原始读者需求明确计入封面目录，不能转录为正文页数")
+    preferred_range = r"(?:目标(?:为|是)?|首选|建议)\s*(?:正文\s*)?\d+\s*(?:-|至|到)\s*\d+"
+    page_or_clause_end = r"\s*(?:页|(?=$|[，,;；、。\n]))"
+    # Unlike the dedicated --target-pages parser, free text can describe words,
+    # chapters or tokens. Only an explicit page unit/context establishes pages.
+    match = re.search(
+        rf"(?:{preferred_range}\s*页|页数\s*[:：]?\s*{preferred_range}{page_or_clause_end})"
+        rf"(?:\s*[，,;；、]\s*(?:最多|不超过|上限)\s*\d+{page_or_clause_end})?", source)
+    if match:
+        value = re.sub(r"^页数\s*[:：]?\s*", "", match.group(0))
+        if re.search(r"正文\s*$", source[:match.start()]):
+            value = "正文 " + value
+        expected = parse_page_budget(value)
+        if (declared is None or declared.mode is not expected.mode
+                or declared.scope is not expected.scope
+                or declared.preferred_minimum != expected.preferred_minimum
+                or declared.preferred_maximum != expected.preferred_maximum
+                or (expected.maximum is not None and declared.maximum != expected.maximum)):
+            raise ValueError("原始目标页数/硬上限或口径被遗漏、改变；请按原文重提Brief输入，不事后改软")
 
 
 class DetailConstraints(BaseModel):
@@ -337,6 +410,10 @@ class DetailConstraints(BaseModel):
         """Return a chapter-allocation target only when the user actually supplied one."""
         if self.page_constraint is None or not self.page_constraint.is_writing_target:
             return None
+        if self.page_constraint.mode is PageConstraintMode.PREFERRED and self.page_constraint.scope is PageScope.DELIVERY_TOTAL:
+            # v6 includes one cover and a short table of contents. This is an
+            # initial body guide, never a chapter hard quota or actual page proof.
+            return max(1, self.page_constraint.target - 2)
         return self.page_constraint.target
 
     @property
@@ -388,7 +465,7 @@ class ChapterSpec(BaseModel):
     chapter_number: int = Field(gt=0)
     weight: float = Field(gt=0)
     rationale: str = Field(min_length=1)
-    required_units: list[str] = Field(min_length=1)
+    required_units: list[str] = Field(default_factory=list)
 
 
 # 中文 A4 固定版式（12pt、行距 1.32、16mm 边距）的保守字数估算：用于 Brief
@@ -406,6 +483,10 @@ def _effective_word_constraints(
         or constraints.word_max is not None
     ):
         return constraints.word_min, constraints.word_target, constraints.word_max
+    if constraints.page_constraint and constraints.page_constraint.mode is PageConstraintMode.PREFERRED:
+        # A preferred length includes code/tables/diagrams; do not manufacture
+        # chapter word bounds from a uniform words-per-page constant.
+        return None, None, None
     pages = constraints.production_page_target
     if pages is None:
         return None, None, None

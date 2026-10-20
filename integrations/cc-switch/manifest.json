@@ -1,26 +1,225 @@
 {
   "package": "knowledge-product-workflow",
-  "version": "1.2.0",
+  "version": "1.4.2",
   "mode": "host-driven",
   "shared_resources": [
     {
       "path": "references/orchestration-contract.md",
-      "sha256": "016afd4181c4731c38763c91af0ea3e0114a7e2655ed5c69794d5df1cbff8f4f"
+      "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+    },
+    {
+      "path": "references/humanizer-zh.md",
+      "sha256": "95627fd4437d886f98032ccc62d79136e6310f1fc04e354bb86431795ff206df"
+    },
+    {
+      "path": "references/humanizer-zh.LICENSE",
+      "sha256": "aa00e74769e1b9d8e7fa7094dbfcca9b129a0ded6dce1cf4da050b99146d2fa7"
+    },
+    {
+      "path": "assets/illustrations/style.json",
+      "sha256": "3ba939b6c82ea82ee83209f76426360a1dd9f34a53e4ab1c47704b3d311f75b9"
+    },
+    {
+      "path": "assets/illustrations/layouts.json",
+      "sha256": "382036084597806fd3ee6b7e6634c0f177fcb72b545095bed33481a5040985e9"
+    },
+    {
+      "path": "assets/illustrations/style-anchor.png",
+      "sha256": "2a64189e98f5d4dcd8d758e5d4f639ed169e7795d580cde230a7d3884f5b51b4"
+    },
+    {
+      "path": "assets/illustrations/style-v2.json",
+      "sha256": "8bc97b0737b500717c8d190a243e243bfc6a2875f35c3469cdb9e8eab74fa1b0"
+    },
+    {
+      "path": "assets/illustrations/palettes-v2.json",
+      "sha256": "c15463f8154009a207f40c6892657ded3c657dc43f1f6ecd19a6ffd329a50995"
+    },
+    {
+      "path": "assets/illustrations/style-anchor-neutral.png",
+      "sha256": "1a6c6888f72c6b1c014a2bae6902f04a3e8f99fa81e023cb150013fe4074a414"
+    },
+    {
+      "path": "assets/illustrations/process-overview-v2.json",
+      "sha256": "19c18462b247d7eebbb32deb8c7ca5088c7ac32fb7b33473f54a47da26c4b7e3"
     }
   ],
   "skills": [
-    {"name": "kp-create", "role": "root-orchestrator"},
-    {"name": "kp-product-strategist", "role": "product-strategy"},
-    {"name": "kp-publication-designer", "role": "publication-design"},
-    {"name": "kp-curriculum-architect", "role": "curriculum"},
-    {"name": "kp-research-verifier", "role": "research-verification"},
-    {"name": "kp-chapter-writer", "role": "chapter-authoring"},
-    {"name": "kp-developmental-editor", "role": "developmental-editing"},
-    {"name": "kp-chinese-humanize-editor", "role": "chinese-copy-editing"},
-    {"name": "kp-diagram-designer", "role": "diagram-design"},
-    {"name": "kp-practice-designer", "role": "practice-design"},
-    {"name": "kp-quality-editor", "role": "quality-editing"},
-    {"name": "kp-independent-reviewer", "role": "independent-review"},
-    {"name": "kp-publisher", "role": "publishing"}
+    {
+      "name": "kp-create",
+      "role": "root-orchestrator",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-product-strategist",
+      "role": "product-strategy",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-publication-designer",
+      "role": "publication-design",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-curriculum-architect",
+      "role": "curriculum",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-research-verifier",
+      "role": "research-verification",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-chapter-writer",
+      "role": "chapter-authoring",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-developmental-editor",
+      "role": "developmental-editing",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-chinese-humanize-editor",
+      "role": "chinese-copy-editing",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        },
+        {
+          "path": "references/humanizer-zh.md",
+          "sha256": "95627fd4437d886f98032ccc62d79136e6310f1fc04e354bb86431795ff206df"
+        },
+        {
+          "path": "references/humanizer-zh.LICENSE",
+          "sha256": "aa00e74769e1b9d8e7fa7094dbfcca9b129a0ded6dce1cf4da050b99146d2fa7"
+        }
+      ]
+    },
+    {
+      "name": "kp-diagram-designer",
+      "role": "diagram-design",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        },
+        {
+          "path": "assets/illustrations/style.json",
+          "sha256": "3ba939b6c82ea82ee83209f76426360a1dd9f34a53e4ab1c47704b3d311f75b9"
+        },
+        {
+          "path": "assets/illustrations/layouts.json",
+          "sha256": "382036084597806fd3ee6b7e6634c0f177fcb72b545095bed33481a5040985e9"
+        },
+        {
+          "path": "assets/illustrations/style-anchor.png",
+          "sha256": "2a64189e98f5d4dcd8d758e5d4f639ed169e7795d580cde230a7d3884f5b51b4"
+        },
+        {
+          "path": "assets/illustrations/style-v2.json",
+          "sha256": "8bc97b0737b500717c8d190a243e243bfc6a2875f35c3469cdb9e8eab74fa1b0"
+        },
+        {
+          "path": "assets/illustrations/palettes-v2.json",
+          "sha256": "c15463f8154009a207f40c6892657ded3c657dc43f1f6ecd19a6ffd329a50995"
+        },
+        {
+          "path": "assets/illustrations/style-anchor-neutral.png",
+          "sha256": "1a6c6888f72c6b1c014a2bae6902f04a3e8f99fa81e023cb150013fe4074a414"
+        },
+        {
+          "path": "assets/illustrations/process-overview-v2.json",
+          "sha256": "19c18462b247d7eebbb32deb8c7ca5088c7ac32fb7b33473f54a47da26c4b7e3"
+        }
+      ]
+    },
+    {
+      "name": "kp-practice-designer",
+      "role": "practice-design",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-quality-editor",
+      "role": "quality-editing",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-independent-reviewer",
+      "role": "independent-review",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-publisher",
+      "role": "publishing",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    },
+    {
+      "name": "kp-visual-reviewer",
+      "role": "visual-review",
+      "resources": [
+        {
+          "path": "references/orchestration-contract.md",
+          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+        }
+      ]
+    }
   ]
 }

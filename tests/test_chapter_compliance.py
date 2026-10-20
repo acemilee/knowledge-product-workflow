@@ -19,6 +19,8 @@ from knowledge_product_workflow.chapter_compliance import (
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact, render_markdown_artifact
 from knowledge_product_workflow.humanize import record_humanize_check
 from knowledge_product_workflow.models import ArtifactStatus
+from knowledge_product_workflow.quality import QualityFinding, Severity
+from knowledge_product_workflow.runtime import inspect_workflow
 from knowledge_product_workflow.state_machine import transition
 from knowledge_product_workflow.workflows.authoring import (
     compile_chapter_contracts,
@@ -107,6 +109,61 @@ def test_submit_chapter_binds_current_body_contract_and_compliance(tmp_path: Pat
     assert validate_current_chapter_compliance(workspace, chapter) == []
 
 
+@pytest.mark.parametrize("severity", [Severity.WARNING, Severity.BLOCKER])
+def test_style_warning_can_get_pages_but_style_blocker_still_rejects(tmp_path, monkeypatch, severity):
+    import knowledge_product_workflow.chapter_compliance as compliance_module
+    workspace, _ = _setup(tmp_path)
+    source = workspace.root / "runs/chapter.md"
+    source.write_text(_body(), encoding="utf-8")
+    mapping = _workspace_input(workspace, "mapping.json", _mapping())
+    record_humanize_check(workspace, 1, source)
+    finding = QualityFinding(code="ILLUSTRATION_STYLE_MANUAL_REQUIRED" if severity is Severity.WARNING
+                             else "ILLUSTRATION_STYLE_FAILED", severity=severity,
+                             location="图:sample", message="当前图的风格量测待决或明确失败")
+    monkeypatch.setattr(compliance_module, "validate_current_diagram_assets", lambda *_: [finding])
+    if severity is Severity.BLOCKER:
+        with pytest.raises(ChapterSubmissionError, match="ILLUSTRATION_STYLE_FAILED"):
+            submit_chapter(workspace, 1, source, mapping)
+    else:
+        chapter, _ = submit_chapter(workspace, 1, source, mapping)
+        assert validate_current_chapter_compliance(workspace, chapter) == [finding]
+        assert inspect_workflow(workspace).stage == "sample_awaiting_approval"
+
+
+@pytest.mark.parametrize("severity", [Severity.WARNING, Severity.BLOCKER])
+def test_sample_approval_keeps_manual_warning_for_pages_but_rejects_blocker(tmp_path, monkeypatch, severity):
+    import knowledge_product_workflow.chapter_compliance as compliance_module
+    from knowledge_product_workflow.workflows.authoring import (
+        SampleApprovalRequiredError,
+        approve_sample_chapter,
+    )
+    workspace, _ = _setup(tmp_path)
+    source = workspace.root / "runs/chapter.md"
+    source.write_text(_body(), encoding="utf-8")
+    record_humanize_check(workspace, 1, source)
+    submit_chapter(workspace, 1, source, _workspace_input(workspace, "mapping.json", _mapping()))
+    finding = QualityFinding(code="ILLUSTRATION_STYLE_MANUAL_REQUIRED", severity=severity,
+                             location="图:sample", message="资产待最终成页复核或明确失败")
+    monkeypatch.setattr(compliance_module, "validate_current_chapter_compliance", lambda *_: [finding])
+    if severity is Severity.BLOCKER:
+        with pytest.raises(SampleApprovalRequiredError, match="尚未通过"):
+            approve_sample_chapter(workspace, "测试用户")
+    else:
+        from knowledge_product_workflow.user_decisions import (
+            UserDecisionTarget,
+            UserResponseDecision,
+            record_user_decision,
+            request_user_decision,
+        )
+        with pytest.raises(SampleApprovalRequiredError, match="尚未收到"):
+            approve_sample_chapter(workspace, "测试用户")
+        request_user_decision(workspace, UserDecisionTarget.SAMPLE)
+        record_user_decision(workspace, UserDecisionTarget.SAMPLE, UserResponseDecision.APPROVE,
+                             approved_by="测试用户", response="隔离测试批准当前样章")
+        assert approve_sample_chapter(workspace, "测试用户").is_file()
+        assert compliance_module.validate_current_chapter_compliance(workspace, source) == [finding]
+
+
 def test_heading_order_components_and_ascii_diagrams_are_blocked_but_code_is_ignored(tmp_path: Path) -> None:
     workspace, contract = _setup(tmp_path)
     body = _body() + """
@@ -136,6 +193,20 @@ def test_heading_order_components_and_ascii_diagrams_are_blocked_but_code_is_ign
 
     codes = {finding.code for finding in findings}
     assert {"HEADING_NUMBER_OUT_OF_ORDER", "INVALID_READER_COMPONENT", "ASCII_DIAGRAM_DETECTED"} <= codes
+
+
+def test_worksheet_required_fields_are_reported_before_chapter_submission(tmp_path: Path) -> None:
+    workspace, contract = _setup(tmp_path)
+    body = _body() + "\n::: {.kp-worksheet}\n工作表内容。\n:::\n"
+    findings = validate_chapter_submission(
+        workspace,
+        1,
+        body.strip() + "\n",
+        ChapterComplianceSubmission.model_validate(_compliance(contract, body)),
+    )
+    worksheet = [item for item in findings if item.code == "PRESENTATION_WORKSHEET_INVALID"]
+    assert len(worksheet) == 1
+    assert all(label in worksheet[0].message for label in ("使用说明", "输入", "输出示例", "复盘"))
 
 
 def test_compliance_becomes_stale_when_reader_body_changes(tmp_path: Path) -> None:

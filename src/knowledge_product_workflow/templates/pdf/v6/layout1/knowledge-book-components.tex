@@ -1,0 +1,123 @@
+% knowledge-product-pdf-v6-components
+\usepackage[most]{tcolorbox}
+
+% knowledge-product-pdf-v6-inline-code
+% Pandoc renders Markdown code spans as \texttt{...}; keep that semantic trigger
+% and give every reader-visible inline code span a stable visual treatment.
+\newtcbox{\KpInlineCode}{
+  on line,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.45pt,
+  arc=2pt,
+  boxsep=0pt,
+  left=3pt,
+  right=3pt,
+  top=1.2pt,
+  bottom=1.2pt,
+  nobeforeafter,
+  tcbox raise base,
+  fontupper=\small\ttfamily
+}
+\renewcommand{\texttt}[1]{\KpInlineCode{#1}}
+
+\newtcolorbox{KpSourceCard}{
+  breakable,
+  colback=kpBrandSoft,
+  colframe=\KnowledgeProductSourceFrameColor,
+  boxrule=0pt,
+  borderline west={2pt}{0pt}{kpBrand},
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpKeyTakeaway}{
+  breakable,
+  colback=kpBrandSoft,
+  colframe=\KnowledgeProductKeyFrameColor,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpPractice}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpNote}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpDecision}{
+  breakable,
+  colback=kpBrandSoft,
+  colframe=\KnowledgeProductKeyFrameColor,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpProcedure}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpBrand,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpWorksheet}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.7pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=10pt,
+  bottom=10pt,
+}
+\newtcolorbox{KpPercentageDistribution}{
+  breakable,
+  colback=kpBrandSoft,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpCodeBox}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=8pt,
+  right=8pt,
+  top=8pt,
+  bottom=8pt,
+}

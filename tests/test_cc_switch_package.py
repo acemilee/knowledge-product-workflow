@@ -1,4 +1,5 @@
 import json
+import locale
 import re
 import shutil
 import subprocess
@@ -16,10 +17,10 @@ def _manifest() -> dict[str, object]:
 
 def _canonical_resource_bytes(path: Path) -> bytes:
     """Hash text resources independently of the checkout's newline policy."""
-    return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return path.read_bytes() if path.suffix == ".png" else path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
-def test_cc_switch_package_has_one_root_and_twelve_specialists() -> None:
+def test_cc_switch_package_has_one_root_and_thirteen_specialists() -> None:
     manifest = _manifest()
     skills = manifest["skills"]
     assert isinstance(skills, list)
@@ -38,6 +39,7 @@ def test_cc_switch_package_has_one_root_and_twelve_specialists() -> None:
         "kp-quality-editor",
         "kp-independent-reviewer",
         "kp-publisher",
+        "kp-visual-reviewer",
     ]
 
 
@@ -67,11 +69,41 @@ def test_package_manifest_hash_binds_shared_resources_and_skill_references() -> 
         assert path.is_file()
         assert resource["sha256"] == sha256(_canonical_resource_bytes(path)).hexdigest()
 
-    reference_pattern = re.compile(r"`(?P<path>(?:\.\./)+references/[^`]+)`")
+    reference_pattern = re.compile(r"`(?P<path>(?:\.\./)*references/[^`]+)`")
     for entry in manifest["skills"]:
         skill_path = PACKAGE_ROOT / "skills" / entry["name"] / "SKILL.md"
         for match in reference_pattern.finditer(skill_path.read_text(encoding="utf-8")):
             assert (skill_path.parent / match.group("path")).resolve().is_file()
+        for resource in entry["resources"]:
+            mirror = skill_path.parent / resource["path"]
+            assert sha256(_canonical_resource_bytes(mirror)).hexdigest() == resource["sha256"]
+            shared = next(item for item in resources if item["path"] == resource["path"])
+            assert resource["sha256"] == shared["sha256"]
+
+
+def test_each_skill_can_be_copied_as_a_self_contained_directory(tmp_path: Path) -> None:
+    for entry in _manifest()["skills"]:
+        destination = tmp_path / entry["name"]
+        shutil.copytree(PACKAGE_ROOT / "skills" / entry["name"], destination)
+        content = (destination / "SKILL.md").read_text(encoding="utf-8")
+        assert "../../references/" not in content
+        assert (destination / "references" / "orchestration-contract.md").is_file()
+
+
+def test_humanizer_reference_license_and_upstream_cases_are_pinned() -> None:
+    expected = {
+        "humanizer-zh.md": "95627fd4437d886f98032ccc62d79136e6310f1fc04e354bb86431795ff206df",
+        "humanizer-zh.LICENSE": "aa00e74769e1b9d8e7fa7094dbfcca9b129a0ded6dce1cf4da050b99146d2fa7",
+    }
+    editor = PACKAGE_ROOT / "skills/kp-chinese-humanize-editor/references"
+    for name, digest in expected.items():
+        original = (PACKAGE_ROOT / "references" / name).read_bytes()
+        assert sha256(original).hexdigest() == digest
+        assert (editor / name).read_bytes() == original
+    fixture = Path(__file__).parent / "fixtures/humanize/upstream_cases.json"
+    assert sha256(fixture.read_bytes()).hexdigest() == "6a62586ee93dd9695976cd45271036f2a92be4f74e1b3b9b6c21a411c8497c0e"
+    cases = json.loads(fixture.read_text(encoding="utf-8"))
+    assert len(cases) == 18
 
 
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="需要 PowerShell 验证 CC Switch 安装器")
@@ -95,6 +127,7 @@ def test_install_package_includes_the_shared_orchestration_contract(tmp_path: Pa
         capture_output=True,
         check=False,
         text=True,
+        encoding=locale.getencoding(),
         timeout=30,
     )
 
@@ -103,6 +136,7 @@ def test_install_package_includes_the_shared_orchestration_contract(tmp_path: Pa
     assert (destination.parent / "references" / "orchestration-contract.md").read_bytes() == contract.read_bytes()
     for entry in _manifest()["skills"]:
         assert (destination / entry["name"] / "SKILL.md").is_file()
+        assert (destination / entry["name"] / "references" / "orchestration-contract.md").read_bytes() == contract.read_bytes()
 
 
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="需要 PowerShell 验证 Skill 包完整性")
@@ -127,11 +161,38 @@ def test_package_verifier_rejects_a_tampered_shared_resource(tmp_path: Path) -> 
         capture_output=True,
         check=False,
         text=True,
+        encoding=locale.getencoding(),
         timeout=30,
     )
 
     assert completed.returncode != 0
     assert "hash mismatch" in completed.stderr.lower()
+
+
+@pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="需要 PowerShell 验证安装回滚")
+def test_installer_rolls_back_already_replaced_skills_after_a_move_failure(tmp_path: Path) -> None:
+    destination = tmp_path / "installation" / "skills"
+    destination.mkdir(parents=True)
+    for entry in _manifest()["skills"]:
+        target = destination / entry["name"]
+        target.mkdir()
+        (target / "SKILL.md").write_text(f"旧包 {entry['name']}\n", encoding="utf-8")
+    before = {path.relative_to(destination).as_posix(): path.read_bytes() for path in destination.glob("*/SKILL.md")}
+    installer = PACKAGE_ROOT / "scripts" / "install-cc-switch.ps1"
+
+    def quote(path: Path) -> str:
+        return "'" + str(path).replace("'", "''") + "'"
+
+    script = r"""function Move-Item {
+param([string]$LiteralPath,[string]$Destination)
+if ($LiteralPath -like '*.kp-stage-*' -and $LiteralPath -like '*kp-curriculum-architect') { throw 'Injected move failure' }
+Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+}
+""" + f"& {quote(installer)} -PackageRoot {quote(PACKAGE_ROOT)} -DestinationRoot {quote(destination)}"
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True, encoding=locale.getencoding(), timeout=30, check=False)
+    assert result.returncode != 0
+    assert "Injected move failure" in result.stderr
+    assert {path.relative_to(destination).as_posix(): path.read_bytes() for path in destination.glob("*/SKILL.md")} == before
 
 
 def test_every_skill_metadata_version_matches_the_package_version() -> None:

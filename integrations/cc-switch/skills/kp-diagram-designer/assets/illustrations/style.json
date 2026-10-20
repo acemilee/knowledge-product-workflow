@@ -1,0 +1,15 @@
+{
+  "style_id": "kp-editorial-illustration",
+  "revision": 1,
+  "rule_set": "kp-illustration-style-1",
+  "anchor_sha256": "2a64189e98f5d4dcd8d758e5d4f639ed169e7795d580cde230a7d3884f5b51b4",
+  "families": ["architecture", "hierarchy", "flow"],
+  "aspect_ratio": 1.777,
+  "role_glyph_height_ratios": {"title": 0.061, "region": 0.049, "node": 0.043, "description": 0.034, "conclusion": 0.043},
+  "review_deviation": 0.15,
+  "block_deviation": 0.25,
+  "minimum_glyph_pt": 9.0,
+  "measurement_source": "批准母版可见字框的人工像素估测；不是字体文件或排版字号",
+  "calibration": "母版角色基线与认可微差/否决大差共同校准；像素实测或矢量量测才适用数值硬门，视觉估测偏差转人工复核",
+  "visual_language": "深色规整、轻微笔性教程字迹；浅彩分区、细线轮廓、小型线性图标；留白有用途。禁止粗笔书法、拟物3D、卡通主角、贴纸彩带、标题下划线、星星和爆炸形。品牌强调角色服从当前色板，辅助色只限浅绿/浅蓝/浅紫，不能随机主导配色。"
+}

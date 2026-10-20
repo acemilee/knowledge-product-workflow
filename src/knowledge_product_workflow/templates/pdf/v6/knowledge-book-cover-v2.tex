@@ -1,0 +1,41 @@
+% knowledge-product-pdf-v6-cover
+% knowledge-product-pdf-v6-cover-layout-2
+\begin{titlepage}
+\thispagestyle{empty}
+\definecolor{kpCoverPaper}{HTML}{FFFCF9}
+\pagecolor{kpCoverPaper}
+\raggedright
+{\color{kpBrand}\rule{29mm}{1mm}\hspace{3mm}\color{kpBrand!30!white}\rule{10mm}{1mm}\par}
+\vspace{24mm}
+{\color{kpMuted}\small \KnowledgeProductAudience\par}
+\vspace{4mm}
+{\color{kpBrand}\fontsize{33}{42}\selectfont\bfseries \KnowledgeProductCoverTitle\par}
+\vspace{5mm}
+{\color{kpInk}\fontsize{17}{25}\selectfont\bfseries \KnowledgeProductSubtitle\par}
+\vspace{6mm}
+% Finite last-line glue avoids a two-character tail without resizing text.
+{\color{kpInk}\fontsize{11.3}{20.5}\selectfont
+\rightskip=0pt plus 2em\parfillskip=0pt plus .75\linewidth
+\KnowledgeProductCoverSummaryZh\par}
+\ifdefempty{\KnowledgeProductCoverSummaryEn}{}{\vspace{4mm}{\color{kpMuted}\fontsize{10.4}{17}\selectfont\itshape \KnowledgeProductCoverSummaryEn\par}}
+\ifdefempty{\KnowledgeProductCoverFocus}{}{\vspace{6mm}{\color{kpMuted}\small 学习主线\quad\KnowledgeProductCoverFocus\par}}
+\vspace{7mm}
+{\color{kpRule}\rule{\textwidth}{0.45pt}\par}
+\vspace{6mm}
+\noindent\begin{minipage}[t]{0.48\textwidth}
+{\color{kpMuted}\small 文档版本\par}\vspace{2mm}
+{\color{kpInk}\normalsize \KnowledgeProductEdition\par}
+\end{minipage}\hfill\begin{minipage}[t]{0.48\textwidth}
+{\color{kpMuted}\small 日期\par}\vspace{2mm}
+{\color{kpInk}\normalsize \KnowledgeProductCoverMonth\par}
+\end{minipage}
+\vspace{7mm}
+\begin{tcolorbox}[enhanced,colback=kpBrandSoft,colframe=kpBrandSoft,boxrule=0pt,
+borderline west={2pt}{0pt}{kpBrand},arc=2pt,left=12pt,right=10pt,top=10pt,bottom=10pt]
+{\color{kpInk}\small\bfseries \KnowledgeProductCopyright\par}
+\ifdefempty{\KnowledgeProductCoverNote}{}{\vspace{2mm}{\color{kpMuted}\small \KnowledgeProductCoverNote\par}}
+\end{tcolorbox}
+\vfill
+\end{titlepage}
+\nopagecolor
+\clearpage

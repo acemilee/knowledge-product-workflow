@@ -119,7 +119,8 @@ def test_new_artifacts_and_help_are_chinese(tmp_path: Path) -> None:
     assert "目标读者" in body
     assert "学习路径" in blueprint_body
     assert "章节预算" in contract_body
-    assert draft_body == "# 1. 基础\n"
+    assert draft_body.startswith("# 1. 基础\n")
+    assert "## 1.1 决策框架" in draft_body and "KP_DRAFT_UNFINISHED" in draft_body
     help_output = CliRunner().invoke(app, ["--help"]).output
     assert "用法" in help_output
     assert "选项" in help_output

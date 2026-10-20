@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -10,11 +9,24 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from knowledge_product_workflow.change_impact import proof_contract_digest
 from knowledge_product_workflow.chapter_compliance import ChapterCompliance, compliance_path
 from knowledge_product_workflow.claim_quality import validate_undeclared_high_risk_claims
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
 from knowledge_product_workflow.quality import QualityFinding, Severity
 from knowledge_product_workflow.source_ledger import validate_claims
+from knowledge_product_workflow.verification_context import (
+    atomic_replace as _v_atomic_replace,
+)
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    unlink as _v_unlink,
+)
+from knowledge_product_workflow.verification_context import (
+    write_text as _v_write_text,
+)
 from knowledge_product_workflow.workflows.authoring import require_current_chapter_contract
 from knowledge_product_workflow.workspace import Workspace
 
@@ -139,14 +151,14 @@ def controlled_exception_schema() -> dict[str, object]:
 
 
 def _atomic_write(path: Path, payload: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _v_mkdir(path.parent,parents=True,exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(payload, encoding="utf-8")
-        os.replace(temporary, path)
+        _v_write_text(temporary, payload, encoding="utf-8")
+        _v_atomic_replace(temporary, path)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if _v_exists(temporary):
+            _v_unlink(temporary)
 
 
 def _workspace_path(workspace: Workspace, stored_path: str) -> Path:
@@ -173,13 +185,13 @@ def _load(path: Path) -> ControlledExceptions:
 def load_controlled_exceptions(workspace: Workspace) -> ControlledExceptions | None:
     """Read the current record when one exists; absence is a normal no-exception state."""
     path = controlled_exceptions_path(workspace)
-    return _load(path) if path.is_file() else None
+    return _load(path) if _v_is_file(path) else None
 
 
 def controlled_exception_input_paths(workspace: Workspace) -> list[Path]:
     """Return exception evidence that must invalidate a bound quality report when changed."""
     record_path = controlled_exceptions_path(workspace)
-    if not record_path.is_file():
+    if not _v_is_file(record_path):
         return []
     paths = [record_path]
     try:
@@ -187,7 +199,7 @@ def controlled_exception_input_paths(workspace: Workspace) -> list[Path]:
         for exception in record.exceptions:
             for stored_path in exception.evidence_paths:
                 candidate = _workspace_path(workspace, stored_path)
-                if candidate.is_file() and candidate not in paths:
+                if _v_is_file(candidate) and candidate not in paths:
                     paths.append(candidate)
     except ValueError:
         # The record itself remains a report input so a corrected replacement invalidates the report.
@@ -204,7 +216,7 @@ def _bind_exception_request(
     if not request.location.startswith(f"chapters/chapter-{chapter_number:02d}.md:第 "):
         raise ValueError("受控例外位置必须与当前章节路径和行号完全一致。")
     try:
-        contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
+        _contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
         compliance = ChapterCompliance.model_validate_json(
             compliance_path(workspace, chapter_number).read_text(encoding="utf-8")
         )
@@ -218,7 +230,7 @@ def _bind_exception_request(
     return ControlledExceptionInput(
         **request.model_dump(),
         chapter_body_sha256=compliance.chapter_body_sha256,
-        contract_sha256=sha256(contract_path.read_bytes()).hexdigest(),
+        contract_sha256=proof_contract_digest(workspace, chapter_number, "compliance"),
     )
 
 
@@ -304,21 +316,21 @@ def validate_controlled_exceptions(
             findings.append(_exception_error(exception, "受控例外位置必须与当前章节路径和行号完全一致。"))
             continue
         try:
-            contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
+            _contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
             compliance = ChapterCompliance.model_validate_json(
                 compliance_path(workspace, chapter_number).read_text(encoding="utf-8")
             )
         except (OSError, ValueError) as error:
             findings.append(_exception_error(exception, f"无法读取当前章节合约或合规记录：{error}"))
             continue
-        current_contract_sha = sha256(contract_path.read_bytes()).hexdigest()
+        current_contract_sha = proof_contract_digest(workspace, chapter_number, "compliance")
         if compliance.chapter_body_sha256 != exception.chapter_body_sha256:
             findings.append(_exception_error(exception, "受控例外绑定的正文版本已过期。"))
             continue
         if current_contract_sha != exception.contract_sha256 or compliance.contract_sha256 != exception.contract_sha256:
             findings.append(_exception_error(exception, "受控例外绑定的章节合约版本已过期。"))
             continue
-        if not chapter_path.is_file():
+        if not _v_is_file(chapter_path):
             findings.append(_exception_error(exception, "受控例外对应的当前章节正文不存在。"))
             continue
         try:
@@ -350,7 +362,7 @@ def validate_controlled_exceptions(
         except ValueError as error:
             findings.append(_exception_error(exception, str(error)))
             continue
-        if any(not path.is_file() for path in evidence):
+        if any(not _v_is_file(path) for path in evidence):
             findings.append(_exception_error(exception, "受控例外引用的证据工件不存在。"))
             continue
         current_findings = validate_undeclared_high_risk_claims(workspace, chapter_path, body)

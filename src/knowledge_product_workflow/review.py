@@ -15,6 +15,15 @@ from pydantic import BaseModel, Field, ValidationError
 
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
 from knowledge_product_workflow.quality import QualityFinding, Severity
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    write_open as _v_write_open,
+)
+from knowledge_product_workflow.verification_context import (
+    write_text as _v_write_text,
+)
 from knowledge_product_workflow.workspace import Workspace
 
 
@@ -148,9 +157,9 @@ def _chapter_paths(workspace: Workspace, chapter_number: int) -> tuple[Path, Pat
 
 def _chapter_snapshot(workspace: Workspace, chapter_number: int) -> tuple[object, str, str]:
     chapter_path, contract_path = _chapter_paths(workspace, chapter_number)
-    if not chapter_path.is_file():
+    if not _v_is_file(chapter_path):
         raise FileNotFoundError(f"缺少章节正文：{chapter_path}")
-    if not contract_path.is_file():
+    if not _v_is_file(contract_path):
         raise FileNotFoundError(f"缺少章节合约：{contract_path}")
     metadata, body = parse_markdown_artifact(chapter_path.read_text(encoding="utf-8"))
     return metadata, body, contract_path.read_text(encoding="utf-8")
@@ -182,7 +191,7 @@ def _revision_path(workspace: Workspace, chapter_number: int) -> Path:
 
 def _latest_revision(workspace: Workspace, chapter_number: int) -> ChapterRevision | None:
     path = _revision_path(workspace, chapter_number)
-    if not path.is_file():
+    if not _v_is_file(path):
         return None
     latest: ChapterRevision | None = None
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -203,7 +212,8 @@ def _target_matches_current(workspace: Workspace, target: ReviewTarget) -> bool:
         return False
     return (
         current.chapter_sha256 == target.chapter_sha256
-        and current.contract_sha256 == target.contract_sha256
+        and (current.contract_sha256 == target.contract_sha256
+             or _equivalent_review_contract(workspace, target.chapter_number, target.contract_sha256, _revision_path(workspace, target.chapter_number)))
         and current.chapter_version == target.chapter_version
     )
 
@@ -221,8 +231,8 @@ def checkpoint_chapter(
     target = _target_from_snapshot(workspace, chapter_number, author_identity, author_session_id)
     revision = ChapterRevision(checkpointed_at=datetime.now(UTC), target=target)
     path = _revision_path(workspace, chapter_number)
-    path.parent.mkdir(exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+    _v_mkdir(path.parent,exist_ok=True)
+    with _v_write_open(path, "a", encoding="utf-8") as handle:
         handle.write(revision.model_dump_json() + "\n")
     workspace.append_event(
         "chapter_checkpointed",
@@ -257,7 +267,7 @@ def create_review_work_order(workspace: Workspace, chapter_number: int) -> Revie
     target = current_review_target(workspace, chapter_number)
     work_order_id = f"review-chapter-{chapter_number:02d}-{target.chapter_sha256[:12]}"
     path = _work_order_path(workspace, work_order_id)
-    if path.is_file():
+    if _v_is_file(path):
         return ReviewWorkOrder.model_validate_json(path.read_text(encoding="utf-8"))
     work_order = ReviewWorkOrder(
         work_order_id=work_order_id,
@@ -275,8 +285,8 @@ def create_review_work_order(workspace: Workspace, chapter_number: int) -> Revie
         output_path=f"chapters/chapter-{chapter_number:02d}-review.json",
         acceptance_command=f'kp review-check --workspace "{workspace.root}"',
     )
-    path.parent.mkdir(exist_ok=True)
-    path.write_text(work_order.model_dump_json(indent=2), encoding="utf-8")
+    _v_mkdir(path.parent,exist_ok=True)
+    _v_write_text(path, work_order.model_dump_json(indent=2), encoding="utf-8")
     workspace.append_event(
         "review_requested",
         {"chapter_number": chapter_number, "work_order_id": work_order.work_order_id},
@@ -297,7 +307,7 @@ def review_work_order_exists(workspace: Workspace, chapter_number: int) -> bool:
 
 def _load_review_work_order(workspace: Workspace, work_order_id: str) -> ReviewWorkOrder | None:
     path = _work_order_path(workspace, work_order_id)
-    if not path.is_file():
+    if not _v_is_file(path):
         return None
     try:
         return ReviewWorkOrder.model_validate_json(path.read_text(encoding="utf-8"))
@@ -306,7 +316,7 @@ def _load_review_work_order(workspace: Workspace, work_order_id: str) -> ReviewW
 
 
 def _required_units(contract_path: Path) -> list[str]:
-    if not contract_path.exists():
+    if not _v_exists(contract_path):
         return []
     text = contract_path.read_text(encoding="utf-8")
     body = parse_markdown_artifact(text)[1] if text.startswith("---\n") else text
@@ -337,7 +347,8 @@ def _current_hashes_match_report(workspace: Workspace, review: ChapterReview) ->
     metadata, body, contract = _chapter_snapshot(workspace, review.chapter_number)
     return (
         review.reviewed_chapter_sha256 == _sha256_text(body)
-        and review.reviewed_contract_sha256 == _sha256_text(contract)
+        and (review.reviewed_contract_sha256 == _sha256_text(contract)
+             or _equivalent_review_contract(workspace, review.chapter_number, review.reviewed_contract_sha256, workspace.root / "chapters" / f"chapter-{review.chapter_number:02d}-review.json"))
         and review.reviewed_chapter_version == metadata.version
     )
 
@@ -350,7 +361,7 @@ def validate_chapter_reviews(workspace: Workspace) -> list[QualityFinding]:
         chapter_number = int(chapter_path.stem.split("-")[1])
         review_path = chapters_dir / f"chapter-{chapter_number:02d}-review.json"
         location = _relative_path(workspace, review_path)
-        if not review_path.is_file():
+        if not _v_is_file(review_path):
             findings.append(_finding("CHAPTER_REVIEW_MISSING", location, "缺少审稿报告，不能批准本章交付。"))
             continue
         try:
@@ -449,3 +460,8 @@ def validate_chapter_reviews(workspace: Workspace) -> list[QualityFinding]:
                 )
             )
     return findings
+
+
+def _equivalent_review_contract(workspace: Workspace, number: int, digest: str, path: Path) -> bool:
+    from knowledge_product_workflow.change_impact import proof_contract_matches
+    return proof_contract_matches(workspace, number, digest, "independent_review", path)

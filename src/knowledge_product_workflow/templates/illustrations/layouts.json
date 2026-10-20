@@ -1,0 +1,14 @@
+{
+  "hierarchy": {
+    "layout_id": "stacked-layers-1",
+    "grammar": "横向画布内三层从上到下居中排列；左侧只显示冻结的group层名，层内node主标签/说明共用母版字号角色。边界可为浅彩梯形，但共同外轮廓斜率和层间隙一致。箭头只按冻结edges从上层指向下层，边标签居中。不添加未声明的侧边总箭头、数字、术语或第四层。结论放底部浅品牌框。",
+    "roles": {"group": "region", "label_line_1": "node", "label_line_2": "description", "caption": "title", "reader_conclusion": "conclusion"},
+    "maximum_regions": 4
+  },
+  "flow": {
+    "layout_id": "branch-and-return-1",
+    "grammar": "横向画布内用有限步骤框和条件菱形显示分支/回路；当前冻结start/condition在左中，两个分支目的地在右上下，返回边走外缘。只有已声明的边有箭头，分支标签不得调换。框与箭头细深色，图标小且同一轮廓风格；不能添加额外编号、图例、图中小表格或装饰横线。短标题仍使用母版字高，不能放大填满横幅。结论置底部浅品牌框。",
+    "roles": {"label_line_1": "node", "label_line_2": "description", "caption": "title", "reader_conclusion": "conclusion"},
+    "maximum_nodes": 6
+  }
+}

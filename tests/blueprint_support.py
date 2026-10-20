@@ -169,8 +169,10 @@ def _section_outline(chapter_number: int, units: list[str]) -> list[dict[str, ob
     ]
 
 
-def submit_test_chapter(workspace: Workspace, tmp_path: Path, chapter_number: int) -> Path:
-    """Submit one structurally valid test chapter through the public chapter protocol."""
+def prepare_test_chapter_inputs(
+    workspace: Workspace, tmp_path: Path, chapter_number: int
+) -> tuple[Path, Path]:
+    """Write the host-owned inputs without crossing the chapter submission gate."""
     _, chapter = require_current_chapter_contract(workspace, chapter_number)
     units = chapter.required_units or ["appendix_note"]
     headings = {
@@ -203,6 +205,12 @@ def submit_test_chapter(workspace: Workspace, tmp_path: Path, chapter_number: in
     compliance = workspace.root / "runs" / f"chapter-{chapter_number:02d}-compliance.json"
     source.write_text(body, encoding="utf-8")
     compliance.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return source, compliance
+
+
+def submit_test_chapter(workspace: Workspace, tmp_path: Path, chapter_number: int) -> Path:
+    """Submit one structurally valid test chapter through the public chapter protocol."""
+    source, compliance = prepare_test_chapter_inputs(workspace, tmp_path, chapter_number)
     record_humanize_check(workspace, chapter_number, source)
     chapter_path, _ = submit_chapter(workspace, chapter_number, source, compliance)
     return chapter_path

@@ -105,6 +105,27 @@ def test_changed_artifact_invalidates_its_user_decision(tmp_path: Path) -> None:
         require_approved_user_decision(workspace, UserDecisionTarget.BRIEF)
 
 
+def test_brief_decision_also_freezes_v6_publication_design(tmp_path: Path) -> None:
+    from knowledge_product_workflow.presentation import (
+        PublicationUpdateInput,
+        apply_publication_update,
+        load_or_create_publication_profile,
+        preview_publication_update,
+    )
+
+    workspace = Workspace.create(tmp_path, "design-decision")
+    brief = create_product_brief(workspace, "主题", DetailConstraints(target_words=1000))
+    original_brief = brief.read_bytes()
+    load_or_create_publication_profile(workspace, language="zh-CN")
+    request_user_decision(workspace, UserDecisionTarget.BRIEF)
+    record_user_decision(workspace, UserDecisionTarget.BRIEF, UserResponseDecision.APPROVE,
+                         approved_by="测试用户", response="批准当前橙色设计")
+    preview_publication_update(workspace, PublicationUpdateInput(brand_color_intent="紫色基调", version_bump="none"), language="zh-CN")
+    apply_publication_update(workspace, approved_by="测试用户")
+    assert brief.read_bytes() == original_brief
+    assert user_decision_requirement(workspace, UserDecisionTarget.BRIEF).state == "stale"
+
+
 def test_managed_blueprint_requires_its_own_current_user_decision(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "guide")
     brief = create_product_brief(workspace, "AI Agent", DetailConstraints(target_words=1000))

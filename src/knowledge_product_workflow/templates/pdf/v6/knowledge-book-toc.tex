@@ -1,0 +1,23 @@
+% knowledge-product-pdf-v6-toc
+\usepackage{titletoc}
+
+\newcommand{\KnowledgeProductContentsTitle}{\parbox{\textwidth}{\color{kpInk}\Huge\bfseries 目录\\[-0.1em]\color{kpMuted}\normalsize Table of Contents}}
+% Quarto/Pandoc may set toc-title immediately before it emits the TOC. Reset
+% the reader-facing title inside the TOC wrapper so its result is deterministic.
+\titlecontents{chapter}[0pt]
+  {\vspace{0.52em}\color{kpInk}\bfseries\fontsize{12}{18}\selectfont}
+  {\color{kpBrand}\contentslabel{2.6em}}
+  {}
+  {\color{kpMuted}\hfill\contentspage}
+  [\vspace{0.42em}\color{kpRule}\titlerule]
+\titlecontents{section}[1.5em]
+  {\vspace{0.30em}\color{kpInk}\fontsize{10.5}{16}\selectfont}
+  {\color{kpBrand}\contentslabel{2.2em}}
+  {}
+  {\color{kpMuted}\hfill\contentspage}
+
+\let\KnowledgeProductTableOfContents\tableofcontents
+\renewcommand{\tableofcontents}{%
+  \renewcommand{\contentsname}{\KnowledgeProductContentsTitle}%
+  \KnowledgeProductTableOfContents\clearpage
+}

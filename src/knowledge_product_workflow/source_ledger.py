@@ -8,6 +8,14 @@ from pathlib import Path
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 from knowledge_product_workflow.quality import QualityFinding, Severity
+from knowledge_product_workflow.verification_context import exists as _v_exists
+from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
+from knowledge_product_workflow.verification_context import (
+    read_text as _v_read_text,
+)
+from knowledge_product_workflow.verification_context import (
+    write_open as _v_write_open,
+)
 
 
 class SourceLedgerEntry(BaseModel):
@@ -34,8 +42,8 @@ class SourceLedgerEntry(BaseModel):
 
 def append_source_entry(path: Path, entry: SourceLedgerEntry) -> None:
     """Append a source record without rewriting existing evidence."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+    _v_mkdir(path.parent,parents=True,exist_ok=True)
+    with _v_write_open(path, "a", encoding="utf-8") as handle:
         handle.write(entry.model_dump_json() + "\n")
 
 
@@ -45,8 +53,8 @@ def validate_claims(
     """Return blockers for uncovered Claims or evidence bound to obsolete contracts."""
     covered_claims: set[str] = set()
     stale_claims: set[str] = set()
-    if ledger_path.exists():
-        for line in ledger_path.read_text(encoding="utf-8").splitlines():
+    if _v_exists(ledger_path):
+        for line in _v_read_text(ledger_path, encoding="utf-8").splitlines():
             if line.strip():
                 entry = SourceLedgerEntry.model_validate_json(line)
                 for claim_id in entry.claim_ids:
@@ -73,6 +81,6 @@ def validate_claims(
             location=claim_id,
             message="来源台账记录绑定的是旧章节合约；请重新核验并登记当前版本来源。",
         )
-        for claim_id in sorted(stale_claims - covered_claims)
+        for claim_id in sorted((stale_claims - covered_claims) & normalized_claims)
     )
     return findings

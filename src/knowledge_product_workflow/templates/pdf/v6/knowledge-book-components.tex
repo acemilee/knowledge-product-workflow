@@ -1,0 +1,223 @@
+% knowledge-product-pdf-v6-components
+\usepackage[most]{tcolorbox}
+\usepackage{seqsplit}
+\newcommand{\KpMixedGap}{\hskip .25em\relax}
+
+% Adjacent glyph backgrounds form one tint while permitting line breaks.
+% Zero horizontal padding preserves the mono advance and the original payload.
+\newcommand{\KpCodeGlyph}[1]{{\small\ttfamily\setlength{\fboxsep}{0pt}\colorbox{kpBrandSoft}{\rule[-.20em]{0pt}{1.12em}#1}}}
+\newtcbox{\KpCodeFirstBox}{on line,colback=kpBrandSoft,boxrule=0pt,boxsep=0pt,
+  arc=.35em,sharp corners=east,left=.38em,right=0pt,top=0pt,bottom=0pt,
+  nobeforeafter,tcbox raise base,fontupper=\small\ttfamily}
+\newtcbox{\KpCodeLastBox}{on line,colback=kpBrandSoft,boxrule=0pt,boxsep=0pt,
+  arc=.35em,sharp corners=west,left=0pt,right=.38em,top=0pt,bottom=0pt,
+  nobeforeafter,tcbox raise base,fontupper=\small\ttfamily}
+\newcommand{\KpCodeFirst}[1]{\KpCodeFirstBox{\rule[-.20em]{0pt}{1.12em}#1}}
+\newcommand{\KpCodeLast}[1]{\KpCodeLastBox{\rule[-.20em]{0pt}{1.12em}#1}}
+\newlength{\KpInlineWidth}
+\newcommand{\KpCodeSmart}[2]{{%
+  \xeCJKsetup{CJKecglue = \hskip 0pt}%
+  \small\ttfamily\settowidth{\KpInlineWidth}{#1}%
+  \advance\KpInlineWidth by 1.22em%
+  \leavevmode\allowbreak\hspace{.18em}%
+  % Keep natural break points even when the full span fits a whole line.
+  #2%
+  \hspace{.18em}%
+}}
+
+% Reserve a reader block using the active fonts and available line width.
+\newdimen\KpMeasuredHeight
+\newdimen\KpMeasuredWidth
+\newdimen\KpMeasuredLineWidth
+\newdimen\KpReserveLimit
+\newcommand{\KpReserveBegin}[1]{\begingroup\KpMeasuredHeight=#1\relax\KpReserveLimit=\textheight}
+% A long list/table/code may continue; reserve its start, not the entire page.
+\newcommand{\KpReserveBreakable}{\KpReserveLimit=.55\textheight}
+\newcommand{\KpMeasureLine}[1]{%
+  \settowidth{\KpMeasuredWidth}{#1}%
+  \advance\KpMeasuredHeight by \baselineskip
+  \loop\ifdim\KpMeasuredWidth>\KpMeasuredLineWidth
+    \advance\KpMeasuredHeight by \baselineskip
+    \advance\KpMeasuredWidth by -\KpMeasuredLineWidth
+  \repeat
+}
+\newcommand{\KpMeasureCodeLine}[1]{{%
+  \small\ttfamily\linespread{1.10}\selectfont
+  \KpMeasuredLineWidth=\dimexpr\linewidth-24pt\relax
+  \KpMeasureLine{#1}%
+  \global\KpMeasuredHeight=\KpMeasuredHeight
+}}
+\newcommand{\KpMeasureReaderText}[1]{{%
+  \normalfont\normalsize
+  \KpMeasuredLineWidth=\dimexpr\linewidth-20pt\relax
+  \KpMeasureLine{#1}%
+  \advance\KpMeasuredHeight by 5pt
+  \global\KpMeasuredHeight=\KpMeasuredHeight
+}}
+\newcommand{\KpReserveEnd}{%
+  \ifdim\KpMeasuredHeight<\KpReserveLimit
+    \edef\KpReserveAction{\endgroup\noexpand\Needspace{\the\KpMeasuredHeight}}%
+  \else
+    \def\KpReserveAction{\endgroup\Needspace{6\baselineskip}}%
+  \fi
+  \KpReserveAction
+}
+% Measure the actual display formula, including its vertical skips. This only
+% reserves space; the original Math node is still rendered once in the body.
+\newcommand{\KpMeasureReaderBlock}[1]{{%
+  \setbox0=\vbox{\hsize=\linewidth\normalfont\normalsize #1\par}%
+  \advance\KpMeasuredHeight by \ht0
+  \advance\KpMeasuredHeight by \dp0
+  \global\KpMeasuredHeight=\KpMeasuredHeight
+}}
+
+% Measure finite closing table/paragraph combinations with the actual fonts.
+% The Lua caller caps table reservations at a small fraction of a page.
+\newdimen\KpMeasuredRowHeight
+\newcommand{\KpTableRowBegin}{\KpMeasuredRowHeight=1.28\baselineskip}
+\newcommand{\KpMeasureTableCell}[3]{%
+  \setlength{\KpMeasuredLineWidth}{(\linewidth-#2\tabcolsep)*\real{#1}}%
+  \setbox0=\vbox{\hsize=\KpMeasuredLineWidth\normalfont\normalsize\raggedright #3\par}%
+  \dimen0=\dimexpr\ht0+\dp0+4pt\relax
+  \ifdim\dimen0>\KpMeasuredRowHeight \KpMeasuredRowHeight=\dimen0\fi
+}
+
+% knowledge-product-pdf-v6-inline-code
+% Pandoc renders Markdown code spans as \texttt{...}; keep that semantic trigger
+% and give every reader-visible inline code span a stable visual treatment.
+\newtcbox{\KpInlineCode}{
+  on line,
+  colback=kpBrandSoft,
+  colframe=kpBrand!25!white,
+  boxrule=0.3pt,
+  arc=0.35em,
+  boxsep=0pt,
+  left=0.38em,
+  right=0.38em,
+  top=0.12em,
+  bottom=0.12em,
+  nobeforeafter,
+  tcbox raise base,
+  fontupper=\small\ttfamily
+}
+% Lua Code targets only Markdown spans. URLs, math and Verbatim keep their roles.
+\newtcolorbox{KpLongCodeBox}{
+  breakable,colback=kpBrandSoft,colframe=kpBrand!25!white,boxrule=0.45pt,
+  arc=2pt,left=6pt,right=6pt,top=4pt,bottom=4pt,fontupper=\small\ttfamily\xeCJKsetup{CJKecglue = \hskip 0pt},
+  before skip=5pt,after skip=5pt
+}
+\newcommand{\KpLongInlineCode}[1]{\seqsplit{#1}}
+\AtBeginDocument{\pdfstringdefDisableCommands{\def\KpInlineCode#1{#1}\def\KpLongInlineCode#1{#1}\def\KpCodeSmart#1#2{#1}}}
+
+\newtcolorbox{KpChapterLead}{
+  enhanced,
+  colback=kpBrandSoft,colframe=kpBrandSoft,boxrule=0pt,
+  borderline west={2pt}{0pt}{kpBrand},arc=2pt,
+  left=10pt,right=10pt,top=8pt,bottom=8pt,
+  before skip=0pt,after skip=12pt,
+  after={\Needspace{5\baselineskip}}
+}
+
+\newtcolorbox{KpSourceCard}{
+  breakable,
+  colback=kpPaper,
+  colframe=\KnowledgeProductSourceFrameColor,
+  boxrule=0pt,
+  borderline west={0.6pt}{0pt}{kpRule},
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=3pt,
+  bottom=3pt,
+  fontupper=\small,
+}
+\newtcolorbox{KpKeyTakeaway}{
+  breakable,
+  colback=kpBrandSoft,
+  colframe=\KnowledgeProductKeyFrameColor,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpPractice}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpNote}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpDecision}{
+  breakable,
+  colback=kpBrandSoft,
+  colframe=\KnowledgeProductKeyFrameColor,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpProcedure}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpBrand,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpWorksheet}{
+  breakable,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.7pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=10pt,
+  bottom=10pt,
+}
+\newtcolorbox{KpPercentageDistribution}{
+  breakable,
+  colback=kpBrandSoft,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=2pt,
+  left=10pt,
+  right=10pt,
+  top=8pt,
+  bottom=8pt,
+}
+\newtcolorbox{KpCodeBox}{
+  breakable,
+  title after break={代码（续）},fonttitle=\small\bfseries,
+  coltitle=kpInk,colbacktitle=kpPaper,
+  colback=kpPaper,
+  colframe=kpRule,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=8pt,
+  right=8pt,
+  top=8pt,
+  bottom=8pt,
+}
