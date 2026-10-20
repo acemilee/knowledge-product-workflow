@@ -11,6 +11,14 @@ import pytest
 PACKAGE_ROOT = Path(__file__).parents[1] / "integrations" / "cc-switch"
 
 
+def _decode_powershell_output(raw: bytes) -> str:
+    # Redirected PowerShell can use UTF-8 even when Windows' locale is still GBK.
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(locale.getencoding())
+
+
 def _manifest() -> dict[str, object]:
     return json.loads((PACKAGE_ROOT / "manifest.json").read_text(encoding="utf-8"))
 
@@ -126,12 +134,10 @@ def test_install_package_includes_the_shared_orchestration_contract(tmp_path: Pa
         ],
         capture_output=True,
         check=False,
-        text=True,
-        encoding=locale.getencoding(),
         timeout=30,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 0, _decode_powershell_output(completed.stderr)
     assert contract.is_file()
     assert (destination.parent / "references" / "orchestration-contract.md").read_bytes() == contract.read_bytes()
     for entry in _manifest()["skills"]:
@@ -160,13 +166,11 @@ def test_package_verifier_rejects_a_tampered_shared_resource(tmp_path: Path) -> 
         ],
         capture_output=True,
         check=False,
-        text=True,
-        encoding=locale.getencoding(),
         timeout=30,
     )
 
     assert completed.returncode != 0
-    assert "hash mismatch" in completed.stderr.lower()
+    assert "hash mismatch" in _decode_powershell_output(completed.stderr).lower()
 
 
 @pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="需要 PowerShell 验证安装回滚")
@@ -189,9 +193,9 @@ if ($LiteralPath -like '*.kp-stage-*' -and $LiteralPath -like '*kp-curriculum-ar
 Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
 }
 """ + f"& {quote(installer)} -PackageRoot {quote(PACKAGE_ROOT)} -DestinationRoot {quote(destination)}"
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, text=True, encoding=locale.getencoding(), timeout=30, check=False)
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], capture_output=True, timeout=30, check=False)
     assert result.returncode != 0
-    assert "Injected move failure" in result.stderr
+    assert "Injected move failure" in _decode_powershell_output(result.stderr)
     assert {path.relative_to(destination).as_posix(): path.read_bytes() for path in destination.glob("*/SKILL.md")} == before
 
 
