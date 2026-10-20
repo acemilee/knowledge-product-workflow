@@ -282,18 +282,26 @@ def _reader_asset_paths(workspace: Workspace, markdown: str) -> list[Path]:
 
 
 def _reader_resource_payloads(workspace: Workspace, markdown: str) -> dict[str, bytes]:
-    """Only declared code/input closure plus reader instructions and licence notices."""
-    from knowledge_product_workflow.reader_artifacts import _asset, resolve_reader_resources
+    """Explicit program/input/document closure; never collect the whole assets tree."""
+    from knowledge_product_workflow.reader_artifacts import (
+        _asset,
+        reader_resource_preflight,
+        resolve_reader_resources,
+    )
+    check = reader_resource_preflight(workspace, markdown)
+    if not check["ready"]:
+        raise ValueError("READER_RESOURCE_PREFLIGHT_FAILED: " + json.dumps(check["findings"], ensure_ascii=False))
     resources = resolve_reader_resources(workspace, markdown)
-    if not resources:
+    declared = check["declared_files"]
+    if not declared:
         return {}
     expected = {}
     for item in resources:
         expected.update(item["inputs"])
     payloads = {}
-    for relative, digest in expected.items():
+    for relative in sorted(declared):
         _, data = _asset(workspace, relative)
-        if hashlib.sha256(data).hexdigest() != digest:
+        if relative in expected and hashlib.sha256(data).hexdigest() != expected[relative]:
             raise ValueError("资源在交付冻结期间改变；停止，不打包旧证明")
         payloads[relative] = data
     for relative in ("assets/README.md", "assets/THIRD_PARTY_NOTICES.md"):
@@ -304,14 +312,14 @@ def _reader_resource_payloads(workspace: Workspace, markdown: str) -> dict[str, 
     return dict(sorted(payloads.items()))
 
 
-def _reader_bundle_outputs(workspace: Workspace, markdown: str) -> dict[Path, bytes]:
+def _reader_bundle_outputs(workspace: Workspace, markdown: str, *, payloads: dict[str, bytes] | None = None) -> dict[Path, bytes]:
     """Plan a deterministic bundle; the existing assembly transaction writes it."""
-    payloads = _reader_resource_payloads(workspace, markdown)
+    payloads = _reader_resource_payloads(workspace, markdown) if payloads is None else payloads
     if not payloads:
         return {}
     manifest = {"schema_version": 1, "layout": "workspace-relative-assets",
         "files": {name: hashlib.sha256(data).hexdigest() for name, data in payloads.items()}}
-    readme = ("# 配套实践资源\n\n文件保持assets/相对目录。先阅读assets/README.md，"
+    readme = ("# 配套实践资源\n\n在新的交付根目录解压本包，保持assets/相对目录；将book.md置于同一根目录的delivery/book.md。整体移动时保持两目录的相对位置。先阅读assets/README.md，"
               "按其说明进入主程序所在目录；不要把示例运行成功当作模型效果或真实业务验证。\n").encode()
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -361,7 +369,7 @@ def reader_resource_bundle_findings(workspace: Workspace, markdown: str) -> list
 
 
 def _book_input_paths(workspace: Workspace, chapter_paths: list[Path], markdown: str, qmd_path: Path,
-                      *, _planned=()) -> list[Path]:
+                      *, _planned=(), _resource_payloads=None) -> list[Path]:
     """Collect only current source graph files, never arbitrary workspace residue."""
     paths = [
         workspace.root / "planning" / "product-brief.md",
@@ -394,7 +402,8 @@ def _book_input_paths(workspace: Workspace, chapter_paths: list[Path], markdown:
             )
         )
     paths.extend(_reader_asset_paths(workspace, markdown))
-    resource_payloads = _reader_resource_payloads(workspace, markdown)
+    resource_payloads = (_reader_resource_payloads(workspace, markdown)
+                         if _resource_payloads is None else _resource_payloads)
     if resource_payloads:
         paths.extend(workspace.root / name for name in resource_payloads)
         paths.extend(workspace.root / "delivery" / name for name in
@@ -403,7 +412,7 @@ def _book_input_paths(workspace: Workspace, chapter_paths: list[Path], markdown:
 
 
 def _build_book_input_manifest(
-    workspace: Workspace, chapter_paths: list[Path], markdown: str, qmd_path: Path, *, _planned=None
+    workspace: Workspace, chapter_paths: list[Path], markdown: str, qmd_path: Path, *, _planned=None, _resource_payloads=None
 ) -> BookInputManifest:
     planned = _planned or {}
     metadata_path = workspace.root / "delivery" / PUBLICATION_METADATA_FILENAME
@@ -420,7 +429,7 @@ def _build_book_input_manifest(
         inputs=[
             HashedArtifact(path=_relative(workspace, path), sha256=hashlib.sha256(planned[path]).hexdigest()
                            if path in planned else _sha256(path))
-            for path in _book_input_paths(workspace, chapter_paths, markdown, qmd_path, _planned=planned)
+            for path in _book_input_paths(workspace, chapter_paths, markdown, qmd_path, _planned=planned, _resource_payloads=_resource_payloads)
         ]
     )
 
@@ -486,18 +495,20 @@ def _chapter_bodies(chapter_paths: list[Path]) -> list[str]:
 
 def _reader_book_from_bodies(bodies: list[str], workspace: Workspace) -> str:
     from knowledge_product_workflow.diagrams import reader_png_references
+    from knowledge_product_workflow.reader_artifacts import rebase_reader_file_links
 
     markdown = "\n\n".join(render_reader_markdown(body).strip() for body in bodies) + "\n"
     markdown = reader_png_references(workspace, markdown)
     _reader_asset_paths(workspace, markdown)
-    return markdown
+    return rebase_reader_file_links(workspace, markdown)
 
 
 def _qmd_book_from_bodies(bodies: list[str], workspace: Workspace) -> str:
     from knowledge_product_workflow.diagrams import qmd_figure_references
+    from knowledge_product_workflow.reader_artifacts import rebase_reader_file_links
 
     markdown = "\n\n".join(render_qmd_markdown(body).strip() for body in bodies) + "\n"
-    return qmd_figure_references(workspace, markdown)
+    return rebase_reader_file_links(workspace, qmd_figure_references(workspace, markdown))
 
 
 def delivery_component_leak_findings(workspace: Workspace, *, include_pdf: bool) -> list[QualityFinding]:
@@ -546,6 +557,27 @@ def delivery_component_leak_findings(workspace: Workspace, *, include_pdf: bool)
     return findings
 
 
+@_verification_read(transaction_view=True)
+def resource_preflight_for_chapters(workspace: Workspace) -> dict:
+    from knowledge_product_workflow.production_intake import consistent_production_read
+    from knowledge_product_workflow.reader_artifacts import reader_resource_preflight
+    from knowledge_product_workflow.workspace_transactions import (
+        require_transaction_consistency_in_view,
+    )
+    with consistent_production_read(workspace):
+        require_transaction_consistency_in_view(workspace)
+        paths = sorted(workspace.root.joinpath("chapters").glob("chapter-[0-9][0-9].md"))
+        markdown = "\n\n".join(_chapter_bodies(paths))
+        return reader_resource_preflight(workspace, markdown)
+
+
+def require_reader_resource_preflight(workspace: Workspace) -> None:
+    check = resource_preflight_for_chapters(workspace)
+    if not check["ready"]:
+        raise ValueError("READER_RESOURCE_PREFLIGHT_FAILED: " + json.dumps(check["findings"], ensure_ascii=False)
+                         + "；修复后显式继续；本前检不授予发布权限")
+
+
 @_verification_read
 def assemble_book(workspace: Workspace) -> Path:
     from knowledge_product_workflow.production_dependencies import require_no_deferred_repairs
@@ -553,6 +585,7 @@ def assemble_book(workspace: Workspace) -> Path:
     # Assembly now commits a journal. A read-only token must not span this
     # owned write; hold the existing controller lock and retain byte freshness.
     with nullcontext() if controller_lock_owned(workspace) else production_lock(workspace):
+        require_reader_resource_preflight(workspace)
         require_no_deferred_repairs(workspace)
         return _assemble_book(workspace)
 
@@ -603,10 +636,11 @@ def _assemble_book(workspace: Workspace) -> Path:
     )
     validate_cover_contract(profile, title)
     planned = {output: markdown.encode('utf8')}
-    planned.update(_reader_bundle_outputs(workspace, markdown))
+    resource_payloads = _reader_resource_payloads(workspace, markdown)
+    planned.update(_reader_bundle_outputs(workspace, markdown, payloads=resource_payloads))
     qmd_path = create_quarto_source(workspace, output, qmd_markdown=qmd_markdown,
                                    _outputs=planned, _canonical_markdown=markdown)
-    current_input_manifest = _build_book_input_manifest(workspace, chapter_paths, markdown, qmd_path, _planned=planned)
+    current_input_manifest = _build_book_input_manifest(workspace, chapter_paths, markdown, qmd_path, _planned=planned, _resource_payloads=resource_payloads)
     render_inputs_changed = any(before[path] != hashlib.sha256(planned[path]).hexdigest() for path in render_contract_paths)
     existing_derivatives = any(
         _v_is_file(path)
@@ -1201,6 +1235,10 @@ def render_pdf(qmd_path: Path, output_dir: Path, workspace: Workspace | None = N
         raise ValueError("本地编译预算须为1—600秒的整数；网络与完整实验预算另计")
     from knowledge_product_workflow.production_dependencies import require_no_deferred_repairs
     if workspace is not None:
+        require_reader_resource_preflight(workspace)
+        book = workspace.root / "delivery/book.md"
+        if _v_is_file(book) and (issues := reader_resource_bundle_findings(workspace, _v_read_text(book, encoding="utf-8"))):
+            raise ValueError(issues[0].message)
         require_no_deferred_repairs(workspace)
     qmd_path = qmd_path.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()

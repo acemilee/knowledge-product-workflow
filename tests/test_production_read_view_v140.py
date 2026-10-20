@@ -165,9 +165,10 @@ def test_another_thread_cannot_borrow_the_parent_guard(tmp_path, monkeypatch):
         copied = copy_context()
         with (
             ThreadPoolExecutor(max_workers=1) as pool,
-            pytest.raises(intake.ProductionConsistencyError, match="控制面写入"),
+            pytest.raises(intake.ProductionConsistencyError, match="CONTROL_LOCK_BUSY") as blocked,
         ):
             pool.submit(copied.run, read_index, workspace, body).result(timeout=20)
+        assert '"state": "active"' in str(blocked.value)
     assert len(calls) == 2
 
 

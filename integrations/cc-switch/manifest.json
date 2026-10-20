@@ -5,7 +5,7 @@
   "shared_resources": [
     {
       "path": "references/orchestration-contract.md",
-      "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+      "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
     },
     {
       "path": "references/humanizer-zh.md",
@@ -51,7 +51,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -61,7 +61,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -71,7 +71,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -81,7 +81,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -91,7 +91,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -101,7 +101,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -111,7 +111,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -121,7 +121,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         },
         {
           "path": "references/humanizer-zh.md",
@@ -139,7 +139,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         },
         {
           "path": "assets/illustrations/style.json",
@@ -177,7 +177,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -187,7 +187,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -197,7 +197,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -207,7 +207,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     },
@@ -217,7 +217,7 @@
       "resources": [
         {
           "path": "references/orchestration-contract.md",
-          "sha256": "39330a4ef661b671dd573dec8ac36beef52880774129517a019989a3aaaad44c"
+          "sha256": "69989206b81e939b81f91caa413fc79745b426670281ee1651ad1dc93c5fa46d"
         }
       ]
     }

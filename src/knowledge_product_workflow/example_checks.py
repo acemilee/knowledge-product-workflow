@@ -64,13 +64,38 @@ def example_template(workspace: Workspace, source: Path) -> dict:
     if resources:
         verified = _verified_resource_records(workspace, body, resources=resources)
         result["resources"] = [{"resource_path": item["resource_path"], "inputs": item["inputs"],
+            "execution_scope": _observed_execution_scope(verified.get(_resource_key(item))),
             "execution_supported": Path(item["resource_path"]).suffix.casefold() == ".py",
             "binding_state": "current" if _resource_key(item) in verified else "missing_or_invalid",
             "needs_execution": _resource_key(item) not in verified if Path(item["resource_path"]).suffix.casefold() == ".py" else None,
             "unsupported_execution_action": None if Path(item["resource_path"]).suffix.casefold() == ".py" else
                 "当前自动执行器仅支持Python；其他语言保持未验证，不重试Python命令或宣称已实跑。"} for item in resources]
         result["presentation_excerpts"] = len(excerpt_spans)
+        result["branch_review_guidance"] = resource_branch_review_guidance()
     return result
+
+
+_RESOURCE_LAUNCHER = ("import runpy,sys;folder,source=sys.argv[1:];"
+                      "sys.path.insert(0,folder);sys.argv=[source];runpy.run_path(source,run_name='__main__')")
+
+
+def resource_branch_review_guidance() -> dict:
+    return {"actual_model_training_inferred": False,
+        "scope": "实际默认入口成功不等于其他参数、模型、设备或训练分支已验证。",
+        "questions": ["请求模式与实际执行模式是否一致？", "通用完成能否支持专用完成标签？",
+                      "失败/未运行是否仍保留未验证？按承诺路径做便宜正反例，不为填表启动重型路径。"],
+        "synthetic_rule": "合成/mock只证明状态分支；不签真实训练。单路径程序不强造分支矩阵。"}
+
+
+def _observed_execution_scope(record: dict | None) -> dict:
+    if record is None:
+        return {"entrypoint": "unknown", "argv": None, "coverage": "not_executed"}
+    if "execution_scope" in record:
+        return record["execution_scope"]
+    command = record.get("command", [])
+    known = len(command) == 8 and command[1:5] == ["-I", "-X", "utf8", "-c"] and command[5] == _RESOURCE_LAUNCHER
+    return {"entrypoint": "default" if known else "unknown", "argv": [] if known else None,
+            "coverage": "legacy_default_entrypoint_only" if known else "unknown"}
 
 
 def run_python_example(workspace: Workspace, source: Path, index: int, *, approved: bool = False) -> Path:
@@ -147,6 +172,9 @@ def _verified_resource_records(workspace: Workspace, body: str, *, resources=Non
             if recorded.get(path.relative_to(workspace.root).as_posix()) != _hash(raw):
                 continue
             data = json.loads(raw)
+            if "execution_scope" in data and data["execution_scope"] != {
+                    "entrypoint": "default", "argv": [], "coverage": "default_entrypoint_only"}:
+                continue
             key = data.get("resource_inputs_sha256")
             item = wanted.get(key)
             if (item is None or data.get("binding_scope") != "reader_resource"
@@ -158,6 +186,13 @@ def _verified_resource_records(workspace: Workspace, body: str, *, resources=Non
             expected_files = {(path.parent / relative).relative_to(workspace.root).as_posix(): value
                               for relative, value in item["inputs"].items()}
             script = (path.parent / item["resource_path"]).relative_to(workspace.root).as_posix()
+            command = data.get("command")
+            expected_script = workspace.root / script
+            if ("execution_scope" in data and (not isinstance(command, list) or len(command) != 8
+                    or command[1:6] != ["-I", "-X", "utf8", "-c", _RESOURCE_LAUNCHER]
+                    or Path(command[6]).resolve() != expected_script.parent.resolve()
+                    or Path(command[7]).resolve() != expected_script.resolve())):
+                continue
             if (data.get("execution_files") != expected_files or data.get("script") != script
                     or data.get("script_sha256") != item["inputs"][item["resource_path"]]
                     or data.get("code_sha256") != data.get("script_sha256")
@@ -206,8 +241,7 @@ def run_python_resource(workspace: Workspace, source: Path, resource_path: str, 
         copy.write_bytes(data)
         execution_files[copy.relative_to(workspace.root).as_posix()] = expected
     script = folder / resource_path
-    launcher = ("import runpy,sys;folder,source=sys.argv[1:];"
-                "sys.path.insert(0,folder);sys.argv=[source];runpy.run_path(source,run_name='__main__')")
+    launcher = _RESOURCE_LAUNCHER
     command = [sys.executable, "-I", "-X", "utf8", "-c", launcher, str(script.parent), str(script)]
     record = {"source": source.relative_to(workspace.root).as_posix(), "source_sha256": _hash(raw),
         "resource_path": resource_path, "resource_inputs": resource["inputs"],
@@ -215,6 +249,7 @@ def run_python_resource(workspace: Workspace, source: Path, resource_path: str, 
         "script": script.relative_to(workspace.root).as_posix(), "script_sha256": _hash(script.read_bytes()),
         "code_sha256": _hash(script.read_bytes()), "approved_execution": True,
         "binding_scope": "reader_resource", "execution_kind": "actual_subprocess", "command": command,
+        "execution_scope": {"entrypoint": "default", "argv": [], "coverage": "default_entrypoint_only"},
         "started_at": datetime.now().astimezone().isoformat(), "timeout_seconds": 10}
     stdout_path, stderr_path = folder / "stdout.bin", folder / "stderr.bin"
     env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP") if key in os.environ}

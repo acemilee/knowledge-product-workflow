@@ -110,3 +110,8 @@ update-publication完成必要PDF派生后止于当前观察/预检。先处理�
 风格2仍用候选母版时，根须将母版与当前PDF同次展示，得到用户明确认可后才用record-pdf-visual-review --confirm-style-anchor绑定当前母版hash；不修改图像hash或代签用户判断。旧文本预算账本仅保留历史，不再作为执行或质量依赖。
 
 诊断预览是失败资产的独立出口：全部正文当前就绪后用render-review-preview；其文件与清单不可当正式交付。
+
+
+## v1.4.2 r0.3 受控执行要点
+
+昂贵汇编/出片前集中运行reader-resource-preflight，无ZIP时也可核预期闭包；缺README/NOTICES/模板或坏链接一次修齐。ready不是发布批准，原未知事务仍先恢复。book.md本地读者文件链统一../assets/，配套ZIP只含已声明资源及说明/许可；按ZIP根README将book.md置delivery/，独立解压与整体移动后仍可达。发布不补包，实跑只证明默认入口。新书默认空右页脚，封面版权按出版日期年份署“葬爱西兰花”；旧配置保留，显式出版更新才改变，不修改安装模板为单书热修。MD、纸面目录和书签须核文字/层级/正文目标页，计数不等于导航通过。

@@ -112,7 +112,7 @@ def test_writer_terminal_private_intake_and_real_freeze_keep_formal_gate_closed(
     assert 'result.body' in writer_prompt
     client.finish(thread, {k: envelope[k] for k in ('task_id', 'role', 'candidate_version', 'input_manifest_sha256')}
         | {'result': {'body': body}})
-    bridge.collect(timeout=.01)
+    _collect_ready(bridge)
     assert receive_native_results(workspace, run.run_id, bridge) == [task_id]
     assert receive_native_results(workspace, run.run_id, bridge) == []
     loaded = tasks.resume_production_run(workspace, run.run_id)
@@ -136,7 +136,7 @@ def finished_writer(tmp_path):
     thread, envelope = next(iter(client.envelopes.items()))
     payload = {k: envelope[k] for k in ('task_id', 'role', 'candidate_version', 'input_manifest_sha256')}
     client.finish(thread, payload | {'result': {'body': body}})
-    bridge.collect(timeout=.01)
+    _collect_ready(bridge)
     return workspace, run, client, bridge, session, task_id, thread
 
 
@@ -154,7 +154,7 @@ def test_invalid_native_result_blocks_and_never_reissues(tmp_path, mutation):
     if mutation in {'wrong_turn', 'missing_turn'}:
         client.events[1]['params']['turnId'] = 'foreign' if mutation == 'wrong_turn' else None
     with pytest.raises(ValueError):
-        bridge.collect(timeout=.01)
+        _collect_ready(bridge)
     attempts = client.model_turns
     with pytest.raises(ValueError):
         session.dispatch()
@@ -188,7 +188,7 @@ def test_new_turn_revokes_loaded_run_and_cannot_accept_old_payload(tmp_path, dur
             return result
         client.request = raced
         with pytest.raises(ValueError):
-            bridge.collect(timeout=.01)
+            _collect_ready(bridge)
     else:
         assert loaded.active_count == 0
         late_turn()
@@ -255,7 +255,7 @@ def test_real_semantic_result_is_required_before_reviewer_is_created(tmp_path, f
         for o in template['observations']]
     client.finish(thread, {k: envelope[k] for k in ('task_id', 'role', 'candidate_version', 'input_manifest_sha256')}
         | {'result': {'structure_review': {'template_id': template['template_id'], 'observations': observations}}})
-    bridge.collect(timeout=.01)
+    _collect_ready(bridge)
     assert receive_native_results(workspace, run.run_id, bridge) == [semantic_id]
     loaded = tasks.resume_production_run(workspace, run.run_id)
     reviewers = [t for t in loaded.tasks if t.role == 'reviewer']
@@ -284,7 +284,7 @@ def test_real_semantic_result_is_required_before_reviewer_is_created(tmp_path, f
     client.finish(reviewer_thread, {k: review_envelope[k] for k in (
         'task_id', 'role', 'candidate_version', 'input_manifest_sha256')}
         | {'result': {'review': review}})
-    bridge.collect(timeout=.01)
+    _collect_ready(bridge)
     receipt = bridge.verified_receipts()[0]
     recorded = receipt['result']['result']['review']
     import hashlib
@@ -386,6 +386,41 @@ class VirtualClock:
     value = 0.0
     def __call__(self):
         return self.value
+
+
+def _collect_ready(bridge):
+    # Protocol fixtures use logical time; filesystem/CPU jitter is not a host event.
+    clock = VirtualClock()
+    original = bridge.client.next_event
+
+    def next_event(*, timeout):
+        event = original(timeout=timeout)
+        if event is None:
+            clock.value += timeout
+        return event
+
+    with patch.object(bridge.client, 'next_event', next_event):
+        return bridge.collect(timeout=.01, clock=clock)
+
+
+def test_scripted_receipts_survive_local_delay_without_extending_logical_window(tmp_path, monkeypatch):
+    import time
+
+    _, _, body, client, bridge, session = prepared(tmp_path)
+    task_id = session.dispatch()['task_ids'][0]
+    thread, envelope = next(iter(client.envelopes.items()))
+    client.finish(thread, {k: envelope[k] for k in (
+        'task_id', 'role', 'candidate_version', 'input_manifest_sha256')}
+        | {'result': {'body': body}})
+    original = bridge.check_boundary
+
+    def delayed(**kwargs):
+        time.sleep(.02)
+        return original(**kwargs)
+
+    monkeypatch.setattr(bridge, 'check_boundary', delayed)
+    assert _collect_ready(bridge)['results'] == [task_id]
+    assert len(bridge.verified_receipts()) == 1
 
 
 @pytest.mark.parametrize('delay', [0, 2.1])

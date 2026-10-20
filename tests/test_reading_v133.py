@@ -67,7 +67,7 @@ def test_cover_two_defaults_and_title_lines_reach_render_metadata(tmp_path):
                                       cover_title_lines=["Agent Skills 入门：", "原理、结构与基础用法"])
     profile = load_or_create_publication_profile(workspace, language="zh-CN", overrides=overrides,
                                                 today=date(2026, 10, 4))
-    assert profile.copyright_line == "© 2026 知识产品工作流"
+    assert profile.copyright_line == "© 2026 葬爱西兰花"
     metadata = load_or_create_publication_metadata(workspace, title=title, audience_label="程序员", language="zh-CN")
     assert metadata.cover_title_lines == overrides.cover_title_lines
     assert metadata.title == title

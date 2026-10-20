@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -165,6 +166,19 @@ class ContentPlanSection(BaseModel):
     asset_rationale: str = Field(min_length=1, max_length=240)
     production_dependencies: list[ChapterDependency] | None = None
     code_delivery: CodeDeliveryPlan | None = None
+    reader_files: list[str] = Field(default_factory=list,
+        description="独立读者模板/数据/说明文件；须位于assets，随README/THIRD_PARTY_NOTICES交付，不宣称程序已执行。")
+
+    @field_validator("reader_files")
+    @classmethod
+    def canonical_reader_files(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("读者文档不得重复")
+        for name in value:
+            _asset_resource_path(name)
+            if PurePosixPath(name).suffix.casefold() not in {".md", ".txt", ".csv", ".tsv", ".json", ".yaml", ".yml"}:
+                raise ValueError("reader_files只接收说明、模板或数据；程序须使用code_delivery")
+        return value
 
     @model_serializer(mode="wrap")
     def preserve_legacy_fields(self, handler):
@@ -175,6 +189,8 @@ class ContentPlanSection(BaseModel):
             value.pop("artifact_kind", None)
         if self.code_delivery is None:
             value.pop("code_delivery", None)
+        if not self.reader_files:
+            value.pop("reader_files", None)
         if self.illustration_policy_revision == 1:
             value.pop("illustration_policy_revision", None)
             value.pop("illustration_tasks", None)
@@ -357,6 +373,41 @@ def _requires_content_plan(workspace: Workspace) -> bool:
     return profile.profile_id in {PRESENTATION_PROFILE_ID, V5_PRESENTATION_PROFILE_ID} and profile.content_contract_enabled
 
 
+def _content_plan_context(workspace: Workspace, chapter_number: int, contract_path: Path,
+                          chapter: BlueprintChapter) -> dict:
+    """Refresh derived instructions without replacing a host's filled template."""
+    focus = teaching_focus(workspace)
+    from knowledge_product_workflow.content_quality import heading_navigation_guidance
+    from knowledge_product_workflow.developmental import boundary_repetition_context
+    from knowledge_product_workflow.reader_artifacts import reader_presentation_guidance
+    body_path = workspace.root / f"chapters/chapter-{chapter_number:02d}.md"
+    body = parse_markdown_artifact(_v_read_text(body_path, encoding="utf-8"))[1] if _v_is_file(body_path) else ""
+    data = {
+        "chapter_number": chapter_number,
+        "section_input_schema": ContentPlanSection.model_json_schema(),
+        "contract": contract_path.relative_to(workspace.root).as_posix(),
+        "contract_sha256": proof_contract_digest(workspace, chapter_number, "content_plan"),
+        "expected_sections": [{"section_id": n, "title": title} for n, title in _flatten_outline(chapter.section_outline)],
+        "allowed_block_kinds": sorted(_BLOCK_KINDS),
+        "heading_navigation": heading_navigation_guidance(),
+        "boundary_repetition_candidates": boundary_repetition_context(workspace, chapter_number, body),
+        "reader_resource_delivery": "采用reader_files或外置程序时，同时准备assets/README.md和assets/THIRD_PARTY_NOTICES.md；出版前一次reader-resource-preflight集中核缺项，不逐文件来回试。",
+        **({"teaching_focus": focus, "code_delivery_schema": CodeDeliveryPlan.model_json_schema(),
+            "reader_presentation": reader_presentation_guidance(workspace)} if focus else {}),
+        "note": "这是未完成模板。按当前合约选择工件，只填语义字段；不得用派生指引改写已批准标题。",
+    }
+    path = content_plan_path(workspace, chapter_number)
+    if _v_is_file(path):
+        raw = _v_load_yaml(_v_read_text(path, encoding="utf-8"))
+        stored = ContentPlan.model_validate(raw)
+        misplaced = [{"container": s.section_id, "consumer": d.section_id}
+                     for s in stored.sections for d in s.production_dependencies or [] if d.section_id != s.section_id]
+        if misplaced:
+            data["legacy_dependency_layout"] = {"items": misplaced,
+                "action": "已冻结读取保留内层消费者；下次受控修订按正确小节登记，不改写历史。"}
+    return data
+
+
 def create_content_plan_template(workspace: Workspace, chapter_number: int) -> tuple[Path, Path]:
     """Create one semantic template tied to the current approved chapter contract."""
     contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
@@ -369,6 +420,10 @@ def create_content_plan_template(workspace: Workspace, chapter_number: int) -> t
             previous = {}
         if (previous.get("chapter_number") == chapter_number
                 and previous.get("contract_sha256") == proof_contract_digest(workspace, chapter_number, "content_plan")):
+            refreshed = json.dumps(_content_plan_context(workspace, chapter_number, contract_path, chapter),
+                                   ensure_ascii=False, indent=2) + "\n"
+            if _v_read_text(context, encoding="utf-8") != refreshed:
+                _atomic_write(context, refreshed)
             return output, context
         raise ContentPlanError(
             f"内容计划模板上下文已过期或缺少合同绑定：{output}；已保留填写内容。"
@@ -416,27 +471,8 @@ def create_content_plan_template(workspace: Workspace, chapter_number: int) -> t
         + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
     )
     _atomic_write(output, template_text)
-    _atomic_write(
-        context,
-        json.dumps(
-            {
-                "chapter_number": chapter_number,
-                "section_input_schema": ContentPlanSection.model_json_schema(),
-                "contract": str(contract_path.relative_to(workspace.root)).replace("\\", "/"),
-                "contract_sha256": proof_contract_digest(workspace, chapter_number, "content_plan"),
-                "expected_sections": [
-                    {"section_id": number, "title": title}
-                    for number, title in _flatten_outline(chapter.section_outline)
-                ],
-                "allowed_block_kinds": sorted(_BLOCK_KINDS),
-                **({"teaching_focus": focus, "code_delivery_schema": CodeDeliveryPlan.model_json_schema()} if focus else {}),
-                "note": "这是未完成模板。按当前合约明确承诺选择工件，解释无需强造资产；只填语义字段，不填章节号、哈希、合约版本或内部路径。",
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-    )
+    _atomic_write(context, json.dumps(_content_plan_context(workspace, chapter_number, contract_path, chapter),
+                                    ensure_ascii=False, indent=2) + "\n")
     workspace.append_event("chapter_content_plan_template_created", {"chapter_number": chapter_number})
     return output, context
 
@@ -504,19 +540,26 @@ def teaching_focus(workspace: Workspace) -> str | None:
 def _validate_code_delivery_policy(workspace: Workspace, plan: ContentPlanInput) -> None:
     focus = teaching_focus(workspace)
     for section in plan.sections:
-        if focus is None and (section.code_delivery is not None or section.artifact_kind == "prompt"):
+        if focus is None and (section.code_delivery is not None or section.reader_files or section.artifact_kind == "prompt"):
             raise ContentPlanError("先在Brief显式确认教学呈现，再采用提示/资源分层政策；旧书不自动迁移")
         if focus is not None and section.artifact_kind == "code" and section.code_delivery is None:
             raise ContentPlanError(f"小节{section.section_id}须说明程序保留正文还是配套资源，不默认贴完整运行器")
 
 
-def _validate_plan_sections(plan: ContentPlanInput, chapter: BlueprintChapter) -> None:
+def _validate_plan_sections(plan: ContentPlanInput, chapter: BlueprintChapter, *, submission: bool = False) -> None:
     if chapter.production_dependencies is not None:
+        if submission and any(section.production_dependencies is None for section in plan.sections):
+            raise ContentPlanError("批准蓝图已明确依赖；新提交须逐小节明确production_dependencies，未知None不能代替明确无依赖[]")
         expected_dependencies = [d.model_dump(mode="json") for d in chapter.production_dependencies]
         actual_dependencies = [d.model_dump(mode="json") for s in plan.sections
                                for d in s.production_dependencies or []]
-        if actual_dependencies != expected_dependencies:
+        key = lambda value: json.dumps(value, sort_keys=True, ensure_ascii=False)
+        if Counter(map(key, actual_dependencies)) != Counter(map(key, expected_dependencies)):
             raise ContentPlanError("写作前小节依赖必须与批准蓝图一致；不得省略或扩大依赖")
+        if submission:
+            for section in plan.sections:
+                if any(d.section_id != section.section_id for d in section.production_dependencies or []):
+                    raise ContentPlanError(f"依赖须归属其section_id对应的小节：{section.section_id}；不要集中到其他小节")
     if plan.illustration_policy_revision != chapter.illustration_policy_revision:
         raise ContentPlanError("内容计划与批准蓝图插图政策不一致")
     if chapter.illustration_policy_revision == 2:
@@ -552,7 +595,7 @@ def submit_content_plan(workspace: Workspace, chapter_number: int, input_path: P
         contract_path, chapter = require_current_chapter_contract(workspace, chapter_number)
     except ChapterContractRequiredError as error:
         raise ContentPlanError(str(error)) from error
-    _validate_plan_sections(plan, chapter)
+    _validate_plan_sections(plan, chapter, submission=True)
     _validate_code_delivery_policy(workspace, plan)
     output = content_plan_path(workspace, chapter_number)
     if _v_exists(output):

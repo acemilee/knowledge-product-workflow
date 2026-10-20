@@ -52,6 +52,7 @@ class CandidateEvaluationContext(BaseModel):
     input_manifest_sha256: str
     canonical_root: str
     live_bindings: dict[str, str] = Field(default_factory=dict)
+    boundary_repetition_advice: dict = Field(default_factory=dict)
 
     def verify(self) -> None:
         self._verified_input_bytes()
@@ -80,7 +81,8 @@ class CandidateEvaluationContext(BaseModel):
         if payload_digest({"task_id": self.task_id, "chapter_number": self.chapter_number,
                            "candidate_version": self.candidate_version,
                            "input_bindings": self.input_bindings,
-                           "live_bindings": self.live_bindings}) != self.input_manifest_sha256:
+                           "live_bindings": self.live_bindings,
+                           **({"boundary_advice": self.boundary_repetition_advice} if self.boundary_repetition_advice else {})}) != self.input_manifest_sha256:
             raise ValueError("输入清单被篡改")
         return inputs
 
@@ -119,6 +121,14 @@ def _freeze_candidate_context(workspace: Workspace, *, chapter_number: int,
     if any(Path(p).is_absolute() or ".." in Path(p).parts for p in paths):
         raise ValueError("输入清单必须为工作区内相对路径")
     bindings = {relative: file_digest(workspace_file(workspace, relative)) for relative in paths}
+    from knowledge_product_workflow.developmental import boundary_repetition_context
+    from knowledge_product_workflow.frontmatter import parse_markdown_artifact
+    text = _v_read_text(source, encoding="utf-8")
+    try:
+        text = parse_markdown_artifact(text)[1]
+    except ValueError:
+        pass
+    advice = boundary_repetition_context(workspace, chapter_number, text)
     base = workspace.root / "runs/production" / run_id / "tasks" / task_id / f"v{candidate_version}"
     if not base.resolve().is_relative_to(workspace.root.resolve()):
         raise ValueError("任务目录越界")
@@ -136,7 +146,8 @@ def _freeze_candidate_context(workspace: Workspace, *, chapter_number: int,
         snapshot_root=str(snapshot), private_result_root=str(base / "results"),
         source_relative=relative_source, input_bindings=bindings,
         input_manifest_sha256=payload_digest({"task_id": task_id, "chapter_number": chapter_number,
-            "candidate_version": candidate_version, "input_bindings": bindings, "live_bindings": {}}),
+            "candidate_version": candidate_version, "input_bindings": bindings, "live_bindings": {}, "boundary_advice": advice}),
+        boundary_repetition_advice=advice,
         canonical_root=str(workspace.root.resolve()),
     )
     context.verify()
@@ -185,7 +196,8 @@ def _prepare_candidate_context(workspace: Workspace, task) -> CandidateEvaluatio
     context.live_bindings = live
     context.input_manifest_sha256 = payload_digest({"task_id": context.task_id,
         "chapter_number": context.chapter_number, "candidate_version": context.candidate_version,
-        "input_bindings": context.input_bindings, "live_bindings": live})
+        "input_bindings": context.input_bindings, "live_bindings": live,
+        **({"boundary_advice": context.boundary_repetition_advice} if context.boundary_repetition_advice else {})})
     context.verify()
     _v_write_text(Path(context.snapshot_root).parent.joinpath("context.json"), context.model_dump_json(indent=2), encoding="utf-8")
     return context
@@ -204,6 +216,10 @@ def _proof_workspace(context: CandidateEvaluationContext) -> Workspace:
         destination = target / relative
         _v_mkdir(destination.parent, parents=True, exist_ok=True)
         _v_copyfile(Path(context.snapshot_root) / relative, destination)
+    if context.boundary_repetition_advice:
+        advice_path = target / "runs/editorial/frozen-boundary-advice.json"
+        _v_mkdir(advice_path.parent, parents=True, exist_ok=True)
+        _v_write_text(advice_path, json.dumps(context.boundary_repetition_advice, ensure_ascii=False), encoding="utf-8")
     return Workspace(root=target)
 
 

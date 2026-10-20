@@ -39,8 +39,8 @@ def test_publication_profile_keeps_defaults_while_metadata_refreshes_from_curren
     assert created.edition == "v1.0.0"
     assert created.publication_date == date(2026, 8, 1)
     assert created.cover_label == "知识产品工作流"
-    assert created.footer_label == "知识产品工作流"
-    assert created.copyright_line == "© 2026 知识产品工作流"
+    assert created.footer_label == ""
+    assert created.copyright_line == "© 2026 葬爱西兰花"
     assert reloaded.title == "更新后的标题"
     assert reloaded.audience_label == "更新后的受众"
     assert reloaded.subtitle == "专业知识教程"
@@ -76,7 +76,7 @@ def test_publication_metadata_applies_optional_overrides_without_making_them_req
     assert metadata.edition == "Second edition"
     assert metadata.publication_date == date(2026, 7, 31)
     assert metadata.publisher_label == "Example Press"
-    assert metadata.footer_label == "Example Press"
+    assert metadata.footer_label == ""
     assert metadata.copyright_line == "Copyright 2026 Example Press"
 
 

@@ -279,6 +279,7 @@ def test_v6_svg_template_recolors_from_approved_profile_without_changing_chapter
     assert chapter.read_bytes() == before_chapter
 
 
+@pytest.mark.requires_svg_tools
 def test_v6_svg_template_real_browser_export_keeps_chinese_labels(tmp_path: Path) -> None:
     if not resolve_diagram_browser().available:
         pytest.skip("当前环境缺少离线图表浏览器")

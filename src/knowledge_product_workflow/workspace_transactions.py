@@ -95,9 +95,8 @@ def _record_path(workspace: Workspace, operation_id: str) -> Path:
 def _save(workspace: Workspace, record: WorkspaceTransaction) -> Path:
     path = _record_path(workspace, record.operation_id)
     _v_mkdir(path.parent,parents=True,exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    _v_write_text(temporary, record.model_dump_json(indent=2), encoding="utf-8")
-    replace_file(temporary, path)
+    from knowledge_product_workflow.verification_context import atomic_metadata_text
+    atomic_metadata_text(path, record.model_dump_json(indent=2))
     return path
 
 

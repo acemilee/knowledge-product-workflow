@@ -117,3 +117,8 @@ Brief已确认teaching_focus时，在原六项教学检查的representation_fit/
 新托管模板的assertion_audit_protocol.required为true时，每项填写input_status、inputs、operation、observed_output、scope_limit、counterexample_status、evidence_kind。先定位输入并寻找反例：缺输入/发现反例/仍有未知时不能supported。actual_execution只引用当前成功实跑，observed_output逐字复制stdout的完整行或连续完整行，不能用数值子串匹配；scope_limit明确此脚本实际完成的步骤，局部检索不能证明生成或完整业务系统。diagram_semantics读取模板diagram:<id>的真实节点/边/标题，required_relations填写主张必须成立的[source,target]对，CLI校对边是否存在；方向或分支不符先revise。正文前提可支撑有边界的独立推导，但结论原话不是自己的前提；概率/普遍规则要检验适用条件和反例，单个成功例不证明普遍成立。字段校验只约束一致性，命题语义及图标题与实际关系仍须本Skill实际审核。
 
 当前模板若列出body_unit:<id>，它只定位这一版正文中的作者情景前提与推导。实际阅读该单元，在命题note中写明使用的给定条件、独立演算或反例；不能仅引用原结论证明原结论。contract/content_plan只有其实际内容覆盖前提时才可引用，不因索引存在就签supported。正文单位不证明外部事实真实，也不证明程序已经执行；外部事实沿研究核验，实际运行主张读取当前实跑记录。缺失必要前提仍uncertain/unsupported，不能用更换ref名称绕过。
+
+
+## v1.4.2 r0.3 受控执行要点
+
+使用现有repetition_value/reading_hierarchy核boundary_repetition_candidates：比较对象/适用范围/新增条件/独立阅读必要性。建议最多8组，每组当前及最多2处前文、每片段160字；同义改写可能漏检。候选不是完整比较材料，实际compared_unit_ids须在冻结前绑定必要原文；缺项明确返回并受控创建新候选，不在冻结后读取活书或把短摘录冒充已审全章。程序默认入口证据不覆盖真实设备/其他模式，先在现有审阅做有界正反与未运行核对。

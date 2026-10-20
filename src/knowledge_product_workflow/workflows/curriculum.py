@@ -208,7 +208,7 @@ class SectionOutlineItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     number: str = Field(min_length=3)
-    title: str = Field(min_length=1)
+    title: str = Field(min_length=1, description="正式主题/概念标题与必要限定；完整读者动作写学习目标/reader_job，批准后精确匹配正文。")
     children: list["SectionOutlineItem"] = Field(default_factory=list)
 
     @field_validator("number", mode="before")
@@ -252,6 +252,7 @@ def _validate_section_outline(chapter_number: int, items: list[SectionOutlineIte
 
 def curriculum_outline_schema() -> dict[str, object]:
     """Return the public, stable contract accepted by curriculum submissions."""
+    from knowledge_product_workflow.content_quality import heading_navigation_guidance
     known_units = set().union(*_ARCHETYPE_ALLOWED_UNITS.values())
     archetypes: dict[str, object] = {}
     for archetype in ChapterArchetype:
@@ -266,6 +267,7 @@ def curriculum_outline_schema() -> dict[str, object]:
         }
     return {
         "schema_version": 2,
+        "heading_navigation": heading_navigation_guidance(),
         "submission_schema": BlueprintSubmission.model_json_schema(),
         "submission_notes": [
             "submission_schema由实际输入模型生成；以下体裁/编号/绑定规则仍由业务校验执行。",
@@ -336,6 +338,8 @@ def _template_schema_comments() -> str:
     lines = [
         "# 课程蓝图填写说明：仅填写当前主题的章节，不生成通用章节。",
         "# 每章必须填写 section_outline：它是批准后冻结的读者可见标题树，正文不得自行改名、跳号或增删。",
+        "# title默认使用具体主题/概念短语与必要限定；学习路径任务导向不等于把学习任务句写成章名。",
+        "# 完整动作写learning_objectives，正文阶段写reader_job/导读；如‘QLoRA量化微调’，不默认‘在相同任务上实践QLoRA’。",
         "# 教学单元公开契约：完整机器可读清单请运行 kp outline-schema。",
         "# required_units 可省略或填写 []；提交时会按章节体裁补入默认必需单元。",
         "# 若显式填写 required_units/optional_units/prohibited_units，只能使用下列英文标识。",
@@ -386,7 +390,7 @@ class BlueprintChapter(BaseModel):
     """One host-designed chapter with a constrained teaching form."""
 
     chapter_number: int = Field(gt=0)
-    title: str = Field(min_length=1)
+    title: str = Field(min_length=1, description="简洁可导航的主题短语；任务导向约束学习路径，不要求把任务流水句作为章名。")
     learning_objectives: list[str] = Field(default_factory=list)
     scope: str = Field(min_length=1)
     weight: float = Field(gt=0)
@@ -897,7 +901,27 @@ def _render_learning_path(submission: BlueprintSubmission, language: str) -> str
                 f"{chapter.chapter_number}. {chapter.title} ({chapter.chapter_archetype.value}; {chapter.rationale})"
             )
         rendered.extend(_render_section_outline(chapter.section_outline, depth=1))
-    return f"## {heading}\n\n" + "\n".join(rendered) + "\n"
+    from knowledge_product_workflow.content_quality import heading_navigation_diagnostics
+    rows = []
+    def add(items, parent):
+        for item in items:
+            rows.append({"number": item.number, "level": len(item.number.split('.')),
+                         "title": item.title, "parent_number": parent})
+            add(item.children, item.number)
+    for chapter in submission.chapters:
+        rows.append({"number": str(chapter.chapter_number), "level": 1,
+                     "title": chapter.title, "parent_number": None})
+        add(chapter.section_outline, str(chapter.chapter_number))
+    diagnostics = heading_navigation_diagnostics(rows, language=language)
+    note = ("\n\n目录命名复核：主题短语用于导航，完整动作留在学习目标与reader_job；"
+            "在本次蓝图审批前核全树，不以字数或自动候选代替语义判断。") if language == "zh-CN" else (
+            "\n\nReview topic-focused titles before approval; keep reader actions in learning objectives. Automated hints are advisory.")
+    if diagnostics:
+        note += f"\n\n命名候选共{len(diagnostics)}项，以下最多12项，仍须核完整目录：\n"
+        note += "\n".join(f"- {d['number']}：{d['signal']}（{d['evidence']}）" for d in diagnostics[:12])
+        if len(diagnostics) > 12:
+            note += "\n- 候选已截断，未显示部分不是已通过。"
+    return f"## {heading}\n\n" + "\n".join(rendered) + note + "\n"
 
 
 def _render_section_outline(items: list[SectionOutlineItem], depth: int = 0) -> list[str]:

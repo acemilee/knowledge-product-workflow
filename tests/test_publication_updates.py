@@ -108,7 +108,7 @@ def test_publication_update_separates_cover_footer_and_semver(tmp_path: Path) ->
     create_product_brief(workspace, "出版字段更新")
     profile = load_or_create_publication_profile(workspace, language="zh-CN", today=date(2020, 1, 1))
     assert profile.cover_label == "知识产品工作流"
-    assert profile.footer_label == "知识产品工作流"
+    assert profile.footer_label == ""
     assert profile.edition_label == "v1.0.0"
 
     preview, candidate = preview_publication_update(
