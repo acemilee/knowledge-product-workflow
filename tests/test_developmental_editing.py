@@ -46,7 +46,15 @@ def _source(workspace: Workspace, *, include_worksheet: bool) -> str:
 
 def _submit_plan(workspace: Workspace) -> None:
     path = workspace.root / "runs" / "content-plan.yaml"
-    path.write_text(yaml.safe_dump(_valid_plan(workspace), allow_unicode=True), encoding="utf-8")
+    payload = _valid_plan(workspace)
+    _, chapter = require_current_chapter_contract(workspace, 1)
+    if chapter.production_dependencies is not None:
+        for section in payload["sections"]:
+            section["production_dependencies"] = [
+                item.model_dump(mode="json") for item in chapter.production_dependencies
+                if item.section_id == section["section_id"]
+            ]
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
     submit_content_plan(workspace, 1, path)
 
 

@@ -72,6 +72,11 @@ def planned_submit(w, n):
     raw = plan(2, [{"section_id": f"{n}.1", "decision": "none",
         "alternative_rationale": "本节以文字判断顺序表达，无须图示关系"}])
     raw["sections"][0]["section_id"] = f"{n}.1"
+    _, _, blueprint = require_current_submitted_blueprint(w)
+    chapter = next(item for item in blueprint.chapters if item.chapter_number == n)
+    raw["sections"][0]["production_dependencies"] = [
+        item.model_dump(mode="json") for item in chapter.production_dependencies
+    ]
     path = w.root / f"runs/plan-{n}.yaml"
     path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     submit_content_plan(w, n, path)
