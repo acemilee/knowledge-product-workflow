@@ -1,5 +1,11 @@
 # KP v1.4.1 编排契约
 
+## v1.4.2 目录语义与呈现
+
+新蓝图navigation_policy_revision=1随原审批记录title_style（topic/procedure/question）及每个章/节navigation.focus/topics/reader_job。先固定中心、覆盖和任务，再命名；标题须在父子语境中可定位重要内容，必要比较和专业长术语保留。outline-view --view review核完整树与改名信息损失；字段未变、短、少连接词或零warning不等于语义合格。不新增常驻角色/逐标题调用或审批点。
+
+根端主展示只用outline-view --view toc的编号/正式标题，目标、权重、风格与取舍另用design汇总，不给每行加解释尾巴。仅改标题先看--from候选的review，再amend-outline --titles-only；CLI在写入前核非标题字段守恒，不再脚本拆多YAML块。旧政策0显示legacy_unknown，不补假意图、不静默采用，也不以删除新模板政策绕过必填；人工审批和下游精确标题匹配保持。
+
 ## v1.4.1 r0.5 有效证据与交付
 
 新书review_evidence_revision=1；旧书不静默迁移，明确adopt-reading-policy --confirm后启用。六项教学检查按当前unit填写evidence_quote和具体note；不得用六条通用理由/附ID代真实判断。合法未变单元沿reuse_unit_ids，默认审稿策略不变。新视觉模板evidence_revision=1要求passed声明clear_page细查、内容锚点及legibility/clipping/layout三维；概览或机器量测只定位，不能默认passed。page仅该页，跨页结论用context绑定本页及相邻清晰PNG。旧已发布历史保留，完整人工覆盖路径仍需实际明确原话，不扩大一般批准。

@@ -213,6 +213,14 @@ def _render_contract_body(
     body += "".join(f"- {claim}\n" for claim in chapter.claim_ids) or "- no_external_claims\n"
     body += f"\n## {section_outline_heading}\n\n"
     body += _render_section_outline(chapter.section_outline)
+    if chapter.navigation is not None:
+        from knowledge_product_workflow.outline_navigation import chapter_heading_rows
+        body += "\n## 目录意图（设计信息，不追加进读者标题）\n\n"
+        for row in chapter_heading_rows(chapter):
+            intent = row["navigation"]
+            if intent:
+                body += (f"- {row['number']} 中心：{intent['focus']}；覆盖：{'、'.join(intent['topics'])}；"
+                         f"读者任务：{intent['reader_job']}\n")
     if chapter.production_dependencies is not None:
         body += "\n## 写作依赖与提供边界\n\n"
         body += "".join(f"- {d.section_id} 使用第{d.producer_chapter}章：{d.kind}／{d.export_id or '导航'}；{d.purpose}\n"

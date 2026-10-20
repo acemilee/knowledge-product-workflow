@@ -32,6 +32,7 @@ from knowledge_product_workflow.illustration_tasks import (
     validate_task_set,
 )
 from knowledge_product_workflow.models import ArtifactMetadata, ArtifactStatus
+from knowledge_product_workflow.outline_navigation import HeadingIntent, TitleStyle
 from knowledge_product_workflow.production_dependencies import (
     ChapterDependency,
     ChapterExport,
@@ -52,6 +53,7 @@ from knowledge_product_workflow.verification_context import (
 from knowledge_product_workflow.verification_context import (
     read_text as _v_read_text,
 )
+from knowledge_product_workflow.verification_context import verified_read as _verification_read
 from knowledge_product_workflow.verification_context import (
     write_text as _v_write_text,
 )
@@ -210,6 +212,14 @@ class SectionOutlineItem(BaseModel):
     number: str = Field(min_length=3)
     title: str = Field(min_length=1, description="正式主题/概念标题与必要限定；完整读者动作写学习目标/reader_job，批准后精确匹配正文。")
     children: list["SectionOutlineItem"] = Field(default_factory=list)
+    navigation: "HeadingIntent | None" = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_navigation(self, handler):
+        value = handler(self)
+        if self.navigation is None:
+            value.pop("navigation", None)
+        return value
 
     @field_validator("number", mode="before")
     @classmethod
@@ -337,6 +347,8 @@ def _template_schema_comments() -> str:
     assert isinstance(archetypes, dict)
     lines = [
         "# 课程蓝图填写说明：仅填写当前主题的章节，不生成通用章节。",
+        "# navigation_policy_revision: 1先填写title_style，每章和每节navigation保留中心focus、覆盖topics和读者任务reader_job。",
+        "# title供读者导航；navigation是设计信息。缩短标题前对照覆盖内容，不用删除词语或减少连接词自签通过。",
         "# 每章必须填写 section_outline：它是批准后冻结的读者可见标题树，正文不得自行改名、跳号或增删。",
         "# title默认使用具体主题/概念短语与必要限定；学习路径任务导向不等于把学习任务句写成章名。",
         "# 完整动作写learning_objectives，正文阶段写reader_job/导读；如‘QLoRA量化微调’，不默认‘在相同任务上实践QLoRA’。",
@@ -401,6 +413,7 @@ class BlueprintChapter(BaseModel):
     prohibited_units: list[str] = Field(default_factory=list)
     claim_ids: list[str] = Field(default_factory=list)
     section_outline: list[SectionOutlineItem] = Field(default_factory=list)
+    navigation: "HeadingIntent | None" = None
     illustration_policy_revision: int = Field(default=1, ge=1, le=2)
     illustration_tasks: list[IllustrationTask] = Field(default_factory=list)
 
@@ -410,6 +423,8 @@ class BlueprintChapter(BaseModel):
     @model_serializer(mode="wrap")
     def preserve_legacy_fields(self, handler):
         value = handler(self)
+        if self.navigation is None:
+            value.pop("navigation", None)
         if self.production_dependencies is None:
             value.pop("production_dependencies", None)
         if self.production_exports is None:
@@ -483,6 +498,8 @@ class BlueprintSubmission(BaseModel):
     illustration_policy_revision: int = Field(default=1, ge=1, le=2)
     production_policy_revision: int = Field(default=0, ge=0, le=1)
     shared_context: SharedContext | None = None
+    navigation_policy_revision: int = Field(default=0, ge=0, le=1)
+    title_style: "TitleStyle | None" = None
 
     @model_validator(mode="before")
     @classmethod
@@ -502,6 +519,10 @@ class BlueprintSubmission(BaseModel):
     @model_serializer(mode="wrap")
     def preserve_legacy_fields(self, handler):
         value = handler(self)
+        if self.navigation_policy_revision == 0:
+            value.pop("navigation_policy_revision", None)
+        if self.title_style is None:
+            value.pop("title_style", None)
         if self.production_policy_revision == 0:
             value.pop("production_policy_revision", None)
             value.pop("shared_context", None)
@@ -511,6 +532,22 @@ class BlueprintSubmission(BaseModel):
 
     @model_validator(mode="after")
     def validate_chapters_and_mode(self) -> "BlueprintSubmission":
+        def nodes():
+            def sections(items):
+                for item in items:
+                    yield item
+                    yield from sections(item.children)
+            for chapter in self.chapters:
+                yield chapter
+                yield from sections(chapter.section_outline)
+
+        if self.navigation_policy_revision == 1:
+            if self.title_style is None or any(node.navigation is None for node in nodes()):
+                raise ValueError("导航政策1须明确标题风格及每个章/节的中心、覆盖主题和读者任务")
+            if any("\n" in node.title or "\r" in node.title for node in nodes()):
+                raise ValueError("读者标题须为单行；教学说明写入导航意图或设计说明")
+        elif self.title_style is not None or any(node.navigation is not None for node in nodes()):
+            raise ValueError("导航意图或标题风格须显式采用navigation_policy_revision: 1")
         if self.production_policy_revision == 1:
             if self.shared_context is None or any(
                 c.production_dependencies is None or c.production_exports is None
@@ -889,29 +926,11 @@ def _render_submission_contract(submission: BlueprintSubmission, language: str) 
 
 def _render_learning_path(submission: BlueprintSubmission, language: str) -> str:
     heading = "学习路径" if language == "zh-CN" else "Learning path"
-    rendered = []
-    for chapter in submission.chapters:
-        if language == "zh-CN":
-            rendered.append(
-                f"{chapter.chapter_number}. {chapter.title}（体裁：{chapter.chapter_archetype.value}；"
-                f"取舍：{chapter.rationale}）"
-            )
-        else:
-            rendered.append(
-                f"{chapter.chapter_number}. {chapter.title} ({chapter.chapter_archetype.value}; {chapter.rationale})"
-            )
-        rendered.extend(_render_section_outline(chapter.section_outline, depth=1))
+    from knowledge_product_workflow.outline_navigation import outline_rows, render_outline_view
+    toc = render_outline_view(submission, "toc")["markdown"]
+    design = render_outline_view(submission, "design")["markdown"]
     from knowledge_product_workflow.content_quality import heading_navigation_diagnostics
-    rows = []
-    def add(items, parent):
-        for item in items:
-            rows.append({"number": item.number, "level": len(item.number.split('.')),
-                         "title": item.title, "parent_number": parent})
-            add(item.children, item.number)
-    for chapter in submission.chapters:
-        rows.append({"number": str(chapter.chapter_number), "level": 1,
-                     "title": chapter.title, "parent_number": None})
-        add(chapter.section_outline, str(chapter.chapter_number))
+    rows = outline_rows(submission)
     diagnostics = heading_navigation_diagnostics(rows, language=language)
     note = ("\n\n目录命名复核：主题短语用于导航，完整动作留在学习目标与reader_job；"
             "在本次蓝图审批前核全树，不以字数或自动候选代替语义判断。") if language == "zh-CN" else (
@@ -921,7 +940,8 @@ def _render_learning_path(submission: BlueprintSubmission, language: str) -> str
         note += "\n".join(f"- {d['number']}：{d['signal']}（{d['evidence']}）" for d in diagnostics[:12])
         if len(diagnostics) > 12:
             note += "\n- 候选已截断，未显示部分不是已通过。"
-    return f"## {heading}\n\n" + "\n".join(rendered) + note + "\n"
+    design_heading = "设计说明" if language == "zh-CN" else "Design notes"
+    return f"## {heading}\n\n{toc}\n## {design_heading}\n\n{design}{note}\n"
 
 
 def _render_section_outline(items: list[SectionOutlineItem], depth: int = 0) -> list[str]:
@@ -1071,7 +1091,55 @@ def submit_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
     )
 
 
-def amend_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
+@_verification_read(transaction_view=True)
+def inspect_curriculum_outline(workspace: Workspace, *, input_path: Path | None = None, view: str = "toc") -> dict:
+    """Return one guarded reader/design snapshot; no approval or business-file writes."""
+    from knowledge_product_workflow.outline_navigation import (
+        compare_outline_navigation,
+        render_outline_view,
+    )
+    from knowledge_product_workflow.production_intake import consistent_production_read
+    from knowledge_product_workflow.verification_context import current_verification
+
+    if view not in {"toc", "design", "review"}:
+        raise ValueError("蓝图视图仅支持toc、design或review")
+    with consistent_production_read(workspace):
+        if input_path is None:
+            source, _, submission = require_current_submitted_blueprint(workspace, require_approved=False)
+        else:
+            source = input_path.expanduser().absolute()
+            if not source.resolve().is_relative_to(workspace.root.resolve()) or not _v_is_file(source):
+                raise ValueError("蓝图候选必须是当前工作区内的文件")
+            submission = _load_submission(source)
+            brief = workspace.root / "planning/product-brief.md"
+            metadata, body = parse_markdown_artifact(_v_read_text(brief, encoding="utf-8"))
+            if metadata.status is not ArtifactStatus.APPROVED:
+                raise CurriculumPrerequisiteError("查看候选前须先批准当前Brief")
+            _validate_brief_binding(submission, brief, metadata, body)
+        result = render_outline_view(submission, view)
+        current_path = workspace.root / "planning/curriculum-blueprint.md"
+        if view == "review" and input_path is not None and _v_is_file(current_path):
+            _, current_body = parse_markdown_artifact(_v_read_text(current_path, encoding="utf-8"))
+            current = parse_blueprint_submission(current_body)
+            if current is not None:
+                try:
+                    require_current_submitted_blueprint(workspace, require_approved=False)
+                except CurriculumPrerequisiteError:
+                    result = compare_outline_navigation(current, submission)
+                    result["current_binding_status"] = "stale"
+                else:
+                    result = compare_outline_navigation(
+                        _normalize_amendment_binding(current, brief, metadata, body),
+                        _normalize_amendment_binding(submission, brief, metadata, body),
+                    )
+                    result["current_binding_status"] = "current"
+        result.update(coherent_snapshot=True, source=str(source.relative_to(workspace.root)),
+                      source_sha256=_sha256_file(source), scope="read_only_outline; not approval or semantic certification")
+    current_verification(workspace).verify_read_set()
+    return result
+
+
+def amend_curriculum_blueprint(workspace: Workspace, input_path: Path, *, titles_only: bool = False) -> Path:
     """Archive and replace a stale blueprint through an explicit revision command."""
     from knowledge_product_workflow.runtime import authorize_workflow_transition
 
@@ -1095,6 +1163,19 @@ def amend_curriculum_blueprint(workspace: Workspace, input_path: Path) -> Path:
     )
     _require_length_recommendation(workspace, brief_path, brief_metadata, brief_body, submission)
     _validate_brief_binding(submission, brief_path, brief_metadata, brief_body)
+    if titles_only:
+        from knowledge_product_workflow.outline_navigation import compare_outline_navigation
+        _, current_body = parse_markdown_artifact(_v_read_text(output, encoding="utf-8"))
+        current = parse_blueprint_submission(current_body)
+        if current is None:
+            raise BlueprintSubmissionError("旧蓝图缺结构化契约，不能证明仅标题变化；先显式迁移")
+        # Admission must prove the old contract still names this Brief before
+        # normalizing CLI-owned legacy binding fields on both sides.
+        require_current_submitted_blueprint(workspace, require_approved=False)
+        current = _normalize_amendment_binding(current, brief_path, brief_metadata, brief_body)
+        report = compare_outline_navigation(current, submission)
+        if report["changed_non_title_fields"]:
+            raise BlueprintSubmissionError("仅标题修订拒绝非标题变化：" + "、".join(report["changed_non_title_fields"]))
     history = workspace.root / "planning" / "history"
     _v_mkdir(history,exist_ok=True)
     archived = history / f"curriculum-blueprint.v{blueprint_metadata.version}.md"
@@ -1201,6 +1282,8 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
     constraints = parse_detail_constraints(brief_body)
     payload = {
         "schema_version": 2,
+        "navigation_policy_revision": 1,
+        "title_style": {"mode": "topic", "vocabulary": [], "examples": []},
         "illustration_policy_revision": 2,
         "brief_sha256": _sha256_file(brief_path),
         "brief_content_sha256": brief_contract_fingerprints(brief_body)["content_contract_sha256"],
@@ -1214,6 +1297,8 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
             {
                 "chapter_number": "<正整数>",
                 "title": "<主题化章节标题>",
+                "navigation": {"focus": "<本章具体中心主题>", "topics": ["<本章须保留的具体内容>"],
+                               "reader_job": "<读者在本章完成的判断或动作>"},
                 "learning_objectives": ["<读者完成后可达成的结果>"],
                 "scope": "<本章覆盖与明确不覆盖的内容>",
                 "weight": "<正数，相对其他章节的教学权重>",
@@ -1234,6 +1319,8 @@ def create_curriculum_blueprint_template(workspace: Workspace, brief_path: Path)
                     {
                         "number": "<章节号.1>",
                         "title": "<主题化小节标题>",
+                        "navigation": {"focus": "<本节具体中心主题>", "topics": ["<本节须保留的具体内容>"],
+                                       "reader_job": "<读者在本节完成的判断或动作>"},
                         "children": [],
                     }
                 ],
