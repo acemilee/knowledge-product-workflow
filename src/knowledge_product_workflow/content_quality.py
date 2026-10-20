@@ -72,10 +72,10 @@ _COMMAND_OR_PATH = re.compile(
 def heading_navigation_guidance() -> dict:
     """Shared naming advice, not a linguistic classifier or a new approval."""
     return {
-        "title_rule": "章名默认以主题/核心概念短语为入口，加必要限定以区分同级范围；不要整树都写成先/把/让的任务流水。",
+        "title_rule": "先记录title_style，再为每个章/节声明navigation.focus、topics和reader_job；默认topic用具体主题短语，必要时选择procedure或question。标题须在完整父子语境中准确代表内容。",
         "action_rule": "学习路径仍任务导向；完整动作保留learning_objectives、reader_job和导读，不把任务句直接当title。",
         "exceptions": "必要短问题、操作项与长术语可保留；不能短成基础/实战等空泛词，也不删范围/否定/参数。",
-        "review": "原蓝图批准前审完整目录与主题对应；批准后不自行改名，旧书warning不改变已有证明。",
+        "review": "用outline-view的review核全树主题覆盖与改名信息损失，再单独呈现toc和design；topics未变、标题变短、连接词减少或零告警均不等于语义通过。批准后不自行改名，旧书warning不改变已有证明。",
         "examples": [{"task": "从一句中文到下一枚token", "topic": "分词与解码"},
                      {"task": "在相同领域任务上实践QLoRA", "topic": "QLoRA量化微调"}],
         "automatic_semantic_approval": False,

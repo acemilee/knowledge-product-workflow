@@ -1,5 +1,13 @@
 # 操作手册
 
+## v1.4.2 目录风格与只读蓝图视图
+
+新outline空模板保留navigation_policy_revision=1；明确title_style（默认topic，也可procedure/question），逐章/节填写navigation.focus、topics、reader_job后再命名。它们是设计信息，不是自评通过记录。原蓝图同次确认风格，不新增审批；旧政策0显示legacy_unknown，不自动迁移。
+
+填写后先运行`kp outline-view --workspace <书稿> --from <候选.yaml> --view review --json`，核完整目录的中心、同级区分、父子范围及重要主题落点。缩名不能藏掉另一项重要内容，主题齐全或零warning不能证明标题表达合格。提交后`--view toc`只供编号/正式标题展示，`--view design`另供风格、目标、权重、取舍与意图；`--json`返回同源数据，查询不改审批/工单且拒绝漂移、混合事务和异线程忙锁。
+
+纯改名先看同一review，再`kp amend-outline --workspace <书稿> --from <候选.yaml> --titles-only`；任何实际非标题字段变化在归档前拒绝。CLI按模型规范化比较，不要求宿主写全书diff脚本；该检查只证明字段守恒，语义无损仍由编辑判断和原蓝图审批负责。完整迁移或内容修订不能冒称仅标题变化。
+
 ## v1.4.2 读者任务与代码呈现
 
 Brief 先确认 `teaching_focus`：`method_practice`、`implementation` 或 `mixed`。方法类教程保留完整提示、输入输出、失败对照和迁移练习；完整运行器可放配套资源，正文只保留讲清机制所需的片段。实现类教程仍可保留必要完整代码，不为所有题材设统一行数硬上限。旧书需经原 Brief 变更与确认流程显式采用，升级不自动改正文。

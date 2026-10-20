@@ -6,7 +6,7 @@ Knowledge Product Workflow（KP）采用宿主驱动的多 Skill 协作模式：
 
 ## v1.4.2 读者任务与代码呈现
 
-蓝图批准前核目录：标题默认使用能区分同级范围的主题短语，任务动作留在学习目标、reader_job与导读。长度、动词开头及空泛词只产生候选提示；短问题、必要操作项与长术语允许语义保留。批准后沿唯一title生成正文/目录/书签，不在出版层截字或设别名。
+蓝图批准前先声明title_style与逐章/节navigation（focus/topics/reader_job），再核完整目录：默认主题短语，操作型或问题型按读者目的选择；必要比较和长术语保留。用outline-view的review核主题覆盖与改名信息损失，toc只展示编号标题，design另放目标/权重/取舍。仅改名用amend-outline --titles-only，在写入前检查非标题字段守恒；它不证明语义无损。短、少连接词或零告警均不能代替编辑判断。旧政策0标legacy_unknown，不自动升级；批准后唯一title生成正文/目录/书签，不截字或设别名。
 
 独立读者模板、数据和说明用内容计划reader_files显式声明（md/txt/csv/tsv/json/yaml/yml）；程序仍走code_delivery。只要有外置资源，就准备assets/README.md与assets/THIRD_PARTY_NOTICES.md；出版前一次`reader-resource-preflight --json`集中核缺项及普通本地链接。ready仅是资源范围诊断，不是程序全部分支/语义/发布批准。ZIP在最小交付根解压，assets/与delivery/book.md保持相对目录。
 

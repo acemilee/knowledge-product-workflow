@@ -81,6 +81,7 @@ from knowledge_product_workflow.illustrations import (
 )
 from knowledge_product_workflow.localization import ChineseTyperCommand, ChineseTyperGroup
 from knowledge_product_workflow.models import ArtifactStatus
+from knowledge_product_workflow.outline_navigation import OutlineViewKind
 from knowledge_product_workflow.pdf_preview import render_pdf_preview_set, resolve_pdftoppm
 from knowledge_product_workflow.pdf_visual import record_manual_pdf_visual_review
 from knowledge_product_workflow.presentation import (
@@ -184,6 +185,7 @@ from knowledge_product_workflow.workflows.curriculum import (
     create_section_outline_migration_draft,
     create_teaching_length_recommendation_template,
     curriculum_outline_schema,
+    inspect_curriculum_outline,
     parse_chapter_budgets,
     submit_curriculum_blueprint,
     submit_teaching_length_recommendation,
@@ -312,7 +314,7 @@ class WorkflowCommand(ChineseTyperCommand):
 
     def invoke(self, ctx):
         workspace = ctx.params.get("workspace")
-        readonly = {"identity", "commands", "doctor", "status", "check-chapter", "check-chapters", "reader-resource-preflight", "recovery-view", "operation-status", "wait-operation",
+        readonly = {"identity", "commands", "doctor", "status", "check-chapter", "check-chapters", "reader-resource-preflight", "outline-view", "recovery-view", "operation-status", "wait-operation",
                     "preview-change-impact", "production-plan", "orchestration-migration-preview"}
         allowed = (self.name in readonly or self.name.endswith("-schema")
                    or self.name.startswith(("recover", "production-recover", "cancel", "pause"))
@@ -326,7 +328,7 @@ class WorkflowCommand(ChineseTyperCommand):
             except (OSError, ValueError, TypeError) as error:
                 typer.echo(str(error), err=True)
                 raise typer.Exit(1) from error
-        cached = {"status", "recovery-view", "submit-content-plan", "draft", "checkpoint-chapter-content",
+        cached = {"status", "recovery-view", "outline-view", "submit-content-plan", "draft", "checkpoint-chapter-content",
                   "submit-chapter", "humanize-check", "developmental-check", "record-developmental-review",
                   "check-chapter", "check-chapters", "reader-resource-preflight", "amend-chapter", "validate", "assemble", "production-plan", "preview-change-impact",
                   "refresh-chapter-proofs", "recheck-chapter", "compile-contracts", "submit-outline",
@@ -2748,6 +2750,25 @@ def outline_schema(json_output: Annotated[bool, typer.Option("--json", help="输
     typer.echo(json.dumps(curriculum_outline_schema(), ensure_ascii=False, indent=2) if json_output else yaml.safe_dump(curriculum_outline_schema(), allow_unicode=True, sort_keys=False))
 
 
+@zh_command("outline-view")
+def outline_view_command(
+    workspace: WorkspacePath,
+    input_path: Annotated[Path | None, typer.Option("--from", help="当前工作区内的候选蓝图；省略时读当前蓝图")] = None,
+    view: Annotated[OutlineViewKind, typer.Option("--view", help="toc纯目录、design设计说明、review覆盖/修订对照")] = OutlineViewKind.TOC,
+    json_output: Annotated[bool, typer.Option("--json", help="输出同一快照的结构化视图")] = False,
+) -> None:
+    """只读查看纯目录、设计说明或覆盖对照，不批准或改写蓝图。"""
+    try:
+        opened = _open_workspace(workspace)
+        if input_path is not None:
+            _workspace_input_path(opened, input_path, label="蓝图候选")
+        value = inspect_curriculum_outline(opened, input_path=input_path, view=view.value)
+    except (OSError, ValueError, TypeError) as error:
+        typer.echo(f"无法查看课程蓝图：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(json.dumps(value, ensure_ascii=False, indent=2) if json_output else value["markdown"])
+
+
 @zh_command("claim-classification-schema")
 def claim_classification_schema_command() -> None:
     """输出事实、作者建议和情境案例的受控分类输入契约。"""
@@ -2804,10 +2825,11 @@ def submit_outline(
 def amend_outline(
     workspace: WorkspacePath,
     input_path: Annotated[Path, typer.Option("--from", help="修订后的课程蓝图 YAML 或 JSON 文件")],
+    titles_only: Annotated[bool, typer.Option("--titles-only", help="只改正式标题，任何非标题字段变化均在写入前拒绝")] = False,
 ) -> None:
     """受控归档旧蓝图和章节合约后，写入待审批的新蓝图版本。"""
     try:
-        output = amend_curriculum_blueprint(_open_workspace(workspace), input_path)
+        output = amend_curriculum_blueprint(_open_workspace(workspace), input_path, titles_only=titles_only)
     except (BlueprintSubmissionError, CurriculumPrerequisiteError, FileNotFoundError, OSError) as error:
         typer.echo(f"无法修订课程蓝图：{error}", err=True)
         raise typer.Exit(code=1) from error

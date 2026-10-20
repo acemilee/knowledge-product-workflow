@@ -85,7 +85,7 @@ Brief插图路由执行`references/orchestration-contract.md`的“v1.3.2 宿主
 1. 新产品运行 `kp init <book_id> --root output`。非 TTY 宿主将提取到的 Brief 字段写入当前工作区 `runs/brief-input.json`，用绝对路径调用 `kp brief ... --from <workspace>/runs/brief-input.json` 生成预览；绝不通过 stdin 按顺序喂答案。
 2. 将结构化 Brief 输入物化为可审阅 Brief；CLI 的 `--confirm` 仅是后台物化动作，不是用户确认。由 `kp-publication-designer` 为当前主题生成一次受控出版设计预览，并与 Brief 一次展示；不得新增用户审批点。向用户只展示主题、受众、级别、交付形式、出版设计和关键约束；仅当 `review_policy: independent_review_required` 时，先运行独立审稿能力预检。没有真实父子任务回执能力时，在 Brief 阶段阻断，不得批准 Brief、创建蓝图、正文或审稿批次。
 3. Brief 获得用户继续决定后，先将教学篇幅评估工作单交给 `kp-curriculum-architect`。若用户的精确/区间页数明显超过建议，向用户展示一张自然语言决策卡片，只收集“采用建议”“保留并扩展”或新的页数/范围；不展示预算 Schema。只有“保留并扩展”同时在蓝图列出新的、非重复教学单元时才可继续。
-4. 将主题化蓝图工作单交给 `kp-curriculum-architect`。根 Skill 只接收并提交主题蓝图，`required_units` 缺省由 CLI 按体裁补全；蓝图获得用户继续决定后运行 `kp compile-contracts --all`。
+4. 将主题化蓝图工作单交给 `kp-curriculum-architect`，同次确定title_style并核完整目录的中心和覆盖。根端主展示只用`outline-view --view toc`的编号/正式标题，风格、目标、权重与取舍按design另节汇总，不给每行标题追加解释；修改时用review核原覆盖及信息损失，纯改名走`amend-outline --titles-only`。字段一致或零告警不代替语义判断。`required_units`缺省由CLI按体裁补全；原蓝图获得用户继续决定后再`compile-contracts --all`，不新增审批点。
 5. serial或宿主资格pending时，正文阶段一次分派当前未提交章节；adaptive通过真实资格后按production-plan就绪列表与总池滚动准备候选。作者提交内容计划、准备骨架并写正文；研究、练习、图语义和中文定稿在本章租约内协作。先完成冻结图语义与受控引用；图资产失败时按正文检查点分支处理，再定稿、结构预检，对同一最终源稿生成发展性与中文报告，最后复查并受控提交章节。无图走完整提交；图失败可由当前正文检查点推进独立后续章。
 6. 研究完成后，由 `kp-research-verifier` 记录研究影响。包装变更走 Brief 交付型修订；内容、权重、范围或学习路径变更必须回到 Brief/蓝图审批与 `kp compile-contracts`；未证实内容降级为读者可见的情境案例。
 7. 用户表达“继续完成全书，直到交付”“直到交付”或同义意图时，后台运行 `kp start-run-intent --workspace <workspace>`。样章获得用户“继续”决定后，根 Skill 必须自动推进剩余章节、内部返工、确定性质量闭环、汇编、PDF 和交付；除真实产品决定、不可自动修复风险、用户暂停、宿主强制中断或最终交付外，不得结束当前任务。用户不需要逐章执行内部命令、填写 `required_units`、查看台账或输入工单信息。

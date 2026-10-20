@@ -41,16 +41,18 @@ Brief明确teaching_focus时，按学习任务选择方法实践、程序实现�
 1. 先运行 `kp length-recommendation-template --workspace <workspace>`，根据主题、受众、级别、案例/练习/代码/图表密度填写并提交教学篇幅建议。建议必须解释依据，不能为迎合用户页数制造同义小节。
    保留模板原有`brief_content_sha256`和`brief_version`，不要手抄摘要或重写绑定字段；建议页数填写正整数、rationale填写字符串列表。“无用户页数硬门”只表示建议不成为硬约束，不表示建议字段可留null。提交错误按返回的字段位置修正；同类失败两次先核当前模板与字段，不改文件名、不查其他书稿猜值。只有前一命令退出0才继续依赖它的模板生成／JSON读取，避免失败后级联执行。
 2. 当用户的精确或区间页数超过建议上限时，在建议中声明每项额外的、可辨识的教学单元、案例、项目、模板或附录。用户未决定“保留并扩展”前不生成蓝图；下限或不限页数不生成机械章节页数目标。
-3. 按学习依赖设计从基础理解到迁移的路径；读者可见标题默认用有辨识度的主题短语和必要限定。教学任务放学习目标、reader_job与导读。主题命名不等于把术语堆成无逻辑清单，也不把学习动作句直接当目录名。
-4. 为每章声明完整 `section_outline`：从 `<章节号>.1` 连续编号，标题必须是读者将看到的正式标题；如“先定义模型能力，再选择评测标准”宜改为“能力定义与评测标准”，原任务保留在学习目标。必要长术语、短问题或操作步骤可以保留，不能只截字/强制名词化；子项必须挂在正确父级下。它是批准后冻结的读者结构，正文作者不得自行增删、跳号、改名或重排。
+3. 按学习依赖先设计内容，再命名。新模板保留`navigation_policy_revision: 1`，记录全书`title_style`：默认topic使用读者熟悉的具体统摄中心；操作手册可选procedure，问题组织可选question；vocabulary记录读者熟悉的术语，examples可空，不编造用户偏好。父标题负责概括中心，具体覆盖项在子节定位，不把完整范围清单搬进标题。例如讨论动机、奖励、反馈、节奏，可用“玩家激励”为父题并在子节分别展开；必要比较对象和关系本身才保留并列。不能把这种概括机械套成“基础/方法/实践”，也不能只删连接词。风格随原蓝图同次确认，不新增审批。
+4. 每个章/节先填写`navigation.focus`（本单元具体中心）、`topics`（不能遗漏的内容）、`reader_job`（读者的动作或判断），再写正式`title`和完整`section_outline`。编号从`<章节号>.1`连续，子项归属正确；章数由教学关系决定。标题负责定位中心，动作放目标/导读；必要比较、长术语、短问题或操作项可以保留。不要把“去掉与/删短”当编辑方法：缩名后若隐藏评分器等另一项重要内容，应保留合适上位概念、必要限定或明确子节落点，而不是把词删进不可见设计信息。批准后的标题树冻结，正文不得自行增删、跳号、改名或重排。
 5. 为每章声明正数 `weight`、教学理由、`chapter_archetype`、必需/可选/禁止教学单元、学习目标、范围和 Claim 清单；预算由 CLI 按权重分配，不得平均摊分。
 6. 体裁只可使用 `concept`、`case_study`、`workshop`、`strategy`、`reference`、`appendix`。根据教学目的选择体裁，不得给每章套同一种“目标、问答、追问、误区、练习、小结”模具。
 7. 面试类产品必须声明 `product_mode: interview` 与全书/每章 `interview_answer_policy`。只有有限高频题可设 `complete_answer_demo`；其余内容使用答题框架、证据槽位或练习，不能量产标准话术。
-8. 先运行 `kp outline --workspace <workspace>`，再运行 `kp outline-schema`。只读取当前工作区生成的模板和该公开 Schema，在模板中填写主题化蓝图后运行 `kp submit-outline --workspace <workspace> --from <template.yaml>`。`required_units` 可省略，CLI 会按 `chapter_archetype` 填充默认值；只有确需偏离默认教学单元时才显式填写公开 Schema 中的值。提交成功后将生成的 `planning/curriculum-blueprint.md` 交给用户审批；同次核全树主题是否清晰、同级可区分、父子范围对应。命名候选仅提示，不由长度或动词自动签语义通过。批准后MD、纸面目录、书签使用同一源标题，不加显示别名或降低层级。
+8. 当前绑定的outline模板已存在时沿用，不重复创建；否则先运行`kp outline --workspace <workspace>`。用`kp outline-schema`填写；同工作区各视图顺序读取，不并发导出造成忙锁。`required_units`可省略，CLI按体裁补全。提交前运行`kp outline-view --workspace <workspace> --from <template.yaml> --view review --json`，一次核完整标题树：中心具体、同级可区分、父子范围对应，必需主题能从标题或明确父子语境定位；短而空泛、范围缩窄、仅消除连接词均应修改。字段未变、topics齐全或机器无告警不证明目录表达准确。核对后运行`kp submit-outline --workspace <workspace> --from <template.yaml>`。根端主展示仅消费`kp outline-view --workspace <workspace> --view toc`；风格、目标、权重和取舍另用design视图单独汇总，不给每行标题追加解释，不把完整机器契约当目录展示。原蓝图仍待用户审批；批准后MD、纸面目录、书签同源，不设别名。
 9. 用户批准蓝图后，运行 `kp compile-contracts --all --workspace <workspace>`。不得逐章手填标题或自行创建合约。
 10. 若 `kp status --json` 返回 `BLUEPRINT_CONTENT_BINDING_STALE`，只可填写当前 Brief 对应的蓝图输入并运行 `kp amend-outline --workspace <workspace> --from <blueprint.yaml>`。该命令会归档旧蓝图和旧合约；提交后必须重新等待用户批准，再运行 `kp compile-contracts --all`。若旧蓝图缺少 `section_outline`，先运行 `kp outline-migration-draft --workspace <workspace>` 取得只读候选。经用户一次确认后，将确认树填入 v2 蓝图输入并运行同一 `kp amend-outline` 命令；不得直接提交候选、不得删除蓝图，也不得从正文自动覆盖蓝图。
 
 ## 禁止事项
+
+只改标题时，先用`outline-view --from <候选> --view review --json`核真实变化和原覆盖内容，再用`amend-outline --from <候选> --titles-only`；CLI在任何归档前拒绝范围、意图、任务、权重、依赖、顺序等非标题变化。不要临时脚本猜多YAML块或用全文diff代替它。该守恒只证明字段，不证明改名无语义损失。旧政策0读为legacy_unknown，不能删除新模板政策绕过必填，也不自动为旧书补意图；需要采用新政策时显式完整修订，不能称仅改标题。
 
 - 不把未验证的市场判断写入蓝图。
 - 不使用统一章节字数掩盖重点差异。
