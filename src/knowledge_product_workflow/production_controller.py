@@ -1152,6 +1152,19 @@ class NativeProductionSession:
                 "component_syntax": "完整fenced div：::: {.组件名}，正文，最后独立一行:::；禁止裸{.组件名}。worksheet使用.kp-worksheet。",
                 "worksheet_labels": list(_WORKSHEET_LABELS),
             }
+            from knowledge_product_workflow.content_quality import heading_navigation_guidance
+            from knowledge_product_workflow.example_checks import resource_branch_review_guidance
+            from knowledge_product_workflow.production_dependencies import payload_digest
+            if task.boundary_repetition_advice:
+                expected = payload_digest({"chapter": task.chapter_number, "version": task.candidate_version,
+                    "role": "writer", "inputs": task.input_bindings, "boundary_advice": task.boundary_repetition_advice})
+                if expected != task.input_manifest_sha256:
+                    raise NativeProtocolError("作者边界建议不是当前冻结任务，拒绝派发")
+            envelope["writer_requirements"]["heading_navigation"] = heading_navigation_guidance()
+            envelope["writer_requirements"]["boundary_repetition_candidates"] = task.boundary_repetition_advice or {
+                "covered_unit_ids": [], "uncovered_unit_count": None, "coverage": "旧任务未冻结建议；范围未知"}
+            if writer_plan and any(s.code_delivery for s in writer_plan.sections):
+                envelope["writer_requirements"]["resource_branch_review"] = resource_branch_review_guidance()
             from knowledge_product_workflow.reader_artifacts import reader_presentation_guidance
             if guidance := reader_presentation_guidance(self.workspace):
                 envelope['writer_requirements']['reader_presentation'] = guidance
@@ -1169,6 +1182,7 @@ class NativeProductionSession:
                 raise NativeProtocolError("审核任务尚无冻结候选")
             context=CandidateEvaluationContext.model_validate_json(self._private_path(task.candidate_context_path).read_text(encoding="utf-8"))
             frozen_inputs = context._verified_input_bytes()
+            envelope["boundary_repetition_candidates"] = context.boundary_repetition_advice
             if (context.chapter_number!=task.chapter_number or context.candidate_version!=task.candidate_version
                     or Path(context.canonical_root).resolve()!=self.workspace.root.resolve()):
                 raise NativeProtocolError("审核候选跨章节／版本")
@@ -1221,6 +1235,7 @@ class NativeProductionSession:
                 template["book_reading_index"] = [{key: row[key] for key in
                     ("unit_id", "chapter_number", "plan_status", "title", "reader_job") if key in row}
                     for row in reading_index]
+                template["boundary_repetition_candidates"] = context.boundary_repetition_advice
                 envelope["structure_template"]=template
                 envelope["structure_review_schema"]=StructureReviewInput.model_json_schema()
             else:

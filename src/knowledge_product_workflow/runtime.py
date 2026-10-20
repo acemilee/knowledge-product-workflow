@@ -44,9 +44,6 @@ from knowledge_product_workflow.user_decisions import (
     import_legacy_approval_records,
     user_decision_requirement,
 )
-from knowledge_product_workflow.verification_context import (
-    atomic_replace as _v_atomic_replace,
-)
 from knowledge_product_workflow.verification_context import is_file as _v_is_file
 from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
 from knowledge_product_workflow.verification_context import (
@@ -712,9 +709,8 @@ def _atomic_json_write(path: Path, payload: BaseModel | dict[str, object]) -> No
     """Commit a controller record atomically; callers never expose half JSON."""
     _v_mkdir(path.parent,parents=True,exist_ok=True)
     text = payload.model_dump_json(indent=2) if isinstance(payload, BaseModel) else json.dumps(payload, ensure_ascii=False, indent=2)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    _v_write_text(temporary, text + "\n", encoding="utf-8")
-    _v_atomic_replace(temporary, path)
+    from knowledge_product_workflow.verification_context import atomic_metadata_text
+    atomic_metadata_text(path, text + "\n")
 
 
 def _read_orchestration_state(workspace: Workspace) -> OrchestrationState | None:
@@ -1850,11 +1846,17 @@ def inspect_workflow(workspace: Workspace) -> WorkflowStatus:
                     precise = _independent_chapter_status(workspace)
                     if precise is not None:
                         return _enrich_orchestration_status(workspace, precise)
-            except ProductionConsistencyError:
-                pass
+            except ProductionConsistencyError as error:
+                from knowledge_product_workflow.production_tasks import ControlLockBusy
+                if isinstance(error.__cause__, ControlLockBusy):
+                    raise
         with consistent_production_read(workspace):
             return _inspect_current_workflow(workspace)
     except ProductionConsistencyError as error:
+        from knowledge_product_workflow.production_tasks import ControlLockBusy
+        if isinstance(error.__cause__, ControlLockBusy) and error.__cause__.owner["state"] == "active":
+            return WorkflowStatus(stage="production_busy", blocked_by=[str(error)],
+                recommended_skill="kp-create", next_command="同工作区串行查询；等原命令终态，不创建工单或自动接管")
         return WorkflowStatus(stage="production_recovery_pending", blocked_by=[str(error)],
             recommended_skill="kp-create", next_command="核受控提交／锁终态，按production-recover／production-recover-lock恢复")
     except (ValueError, TypeError, OSError) as error:
@@ -1950,6 +1952,8 @@ def _inspect_current_workflow(workspace: Workspace) -> WorkflowStatus:
 def route_workflow(workspace: Workspace) -> RouteDecision:
     """Return the one Skill allowed to handle the current persisted stage."""
     status = inspect_workflow(workspace)
+    if status.stage == "production_busy":
+        raise ValueError(status.blocked_by[0])
     return RouteDecision(status=status, skill=status.recommended_skill)
 
 
@@ -2135,8 +2139,10 @@ def create_orchestration_work_order(
             "这是尚未纳入 v1.1 编排的旧工作区；请先运行 kp orchestration-migration-preview 查看只读范围，"
             "经用户确认后以 --adopt-legacy 创建编排工单。"
         )
-    ensure_orchestration(workspace)
     status = _post_status if _post_status is not None else inspect_workflow(workspace)
+    if status.stage == "production_busy":
+        raise OrchestrationWorkOrderError(status.blocked_by[0])
+    ensure_orchestration(workspace)
     intent = read_run_intent(workspace)
     if intent is not None and intent.auto_to_delivery and intent.state is RunIntentState.WAITING_FOR_DECISION and status.required_human_decision is None and status.stage != "completed":
         _atomic_json_write(_run_intent_path(workspace), intent.model_copy(update={"state": RunIntentState.ACTIVE, "updated_at": datetime.now(UTC), "stop_reason": None}))
@@ -3014,6 +3020,8 @@ def preflight_independent_review(
 
 
 def create_work_order(workspace: Workspace, decision: RouteDecision) -> Path:
+    if decision.status.stage == "production_busy":
+        raise ValueError("CONTROL_LOCK_BUSY: 不创建或刷新业务工单")
     """Write an auditable, scoped work order for the current route decision."""
     reads, writes, outputs = _SKILL_SCOPES[decision.skill]
     existing_inputs = sorted(

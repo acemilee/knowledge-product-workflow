@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer
 from knowledge_product_workflow.frontmatter import parse_markdown_artifact
 from knowledge_product_workflow.models import ArtifactStatus
 from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import memoized_read as _memoized_read
 from knowledge_product_workflow.verification_context import (
     read_bytes as _v_read_bytes,
 )
@@ -542,6 +543,14 @@ def undeclared_candidate_dependencies(workspace: Workspace, chapter_number: int,
 @_verification_read(transaction_view=True)
 def deferred_repairs(workspace: Workspace, *, final_review: bool = False) -> list[dict]:
     """Read-only repair debt, independent of which author happens to be next."""
+    from knowledge_product_workflow.workspace_transactions import pending_workspace_transactions
+    pending = pending_workspace_transactions(workspace)
+    return _deferred_repairs_payload(workspace, final_review=final_review,
+        pending_json=json.dumps(pending, sort_keys=True, default=str))
+
+
+@_memoized_read
+def _deferred_repairs_payload(workspace: Workspace, *, final_review: bool, pending_json: str) -> list[dict]:
     from knowledge_product_workflow.change_impact import binding_policy_revision
     from knowledge_product_workflow.chapter_compliance import (
         check_chapter_in_view as check_chapter,
@@ -551,11 +560,10 @@ def deferred_repairs(workspace: Workspace, *, final_review: bool = False) -> lis
     )
     from knowledge_product_workflow.production_context import _missing_proofs
     from knowledge_product_workflow.workflows.curriculum import require_current_submitted_blueprint
-    from knowledge_product_workflow.workspace_transactions import pending_workspace_transactions
     if binding_policy_revision(workspace) != 2:
         return []
     _, _, blueprint = require_current_submitted_blueprint(workspace)
-    pending = pending_workspace_transactions(workspace)
+    pending = json.loads(pending_json)
     result = []
     for chapter in blueprint.chapters:
         number = chapter.chapter_number

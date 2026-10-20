@@ -171,3 +171,8 @@ Brief 中展示并确认品牌色：用户未指定时默认橙色基调，明�
 
 
 原生接入工程入口production-host-connect／replay／session可由commands发现，session默认零模型；当前真实资格pending，不自动启动资格小样或提高模型请求额度。真实试验需要明确授权；已有本次授权沿其范围执行，不重复确认，开发不自动同步安装。已批准样章仅作输入，样章修订沿原串行审批；正文作者先有当前内容计划。已完成单章先保全，执行槽按当前宿主协议核实归还后即可送审／补位，不等同批全完；未知／未释放仍占总池。详见共享契约及operator-runbook。
+
+
+## v1.4.2 r0.3 受控执行要点
+
+同工作区控制查询与写入互斥，收到CONTROL_LOCK_BUSY等原命令实际退出/回执终态，不轮询协调、不自动接管；未知锁保持恢复门。多个已提交消费者用一次 `kp check-chapters --chapter 13 --chapter 14 --workspace <workspace> --json`，逐项看all_current/refresh_actions，退出0不等于最终QA通过。正文修订用amend-chapter并等整条命令终态后才编辑，早期输出不授权提前apply_patch。

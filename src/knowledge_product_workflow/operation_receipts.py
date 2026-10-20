@@ -16,10 +16,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from knowledge_product_workflow.atomic_files import replace_file
 from knowledge_product_workflow.verification_context import is_file as _v_is_file
 from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
-from knowledge_product_workflow.verification_context import write_open, write_text
+from knowledge_product_workflow.verification_context import write_open
 from knowledge_product_workflow.workspace import Workspace
 
 Phase = Literal[
@@ -112,9 +111,8 @@ def _save(workspace: Workspace, receipt: OperationReceipt, **updates) -> Operati
         update={**updates, "revision": receipt.revision + 1, "last_progress": _now()}
     )
     path = receipt_path(workspace, receipt.operation_id)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    write_text(temporary, receipt.model_dump_json(indent=2), encoding="utf-8")
-    replace_file(temporary, path)
+    from knowledge_product_workflow.verification_context import atomic_metadata_text
+    atomic_metadata_text(path, receipt.model_dump_json(indent=2))
     return receipt
 
 

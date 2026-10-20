@@ -387,3 +387,18 @@ production-host-session新增auth-status、auth-start（mode为browser或device�
 审稿子任务只提交评价内容。诊断程序桥接按真实请求填`model`（请求模型名）、`model_version`（宿主未报告时明确为`host-not-reported`）、`prompt_hash`（本次turn输入文本UTF-8字节SHA-256，非不可见系统前缀的哈希）及线程身份；模型不计算或猜测这些字段，回传伪造值也不会成为审稿来源。原spawn的输入契约保持不变，技术来源元数据齐全不代表内容审稿通过。
 
 诊断运行可显式`start(diagnostic=true, diagnostic_review_policy=independent_review_required)`追加独立审稿，或在Python的create_production_run传相同关键字。它不改Brief的发布策略、不声称真实宿主已具备生产独立审稿资格；正式运行或以此字段取消审稿均在创建前拒绝。默认不传时仍继承Brief。这样可在诚实未签生产资格的环境准备附加诊断审稿，全部候选仍受原质量门及禁止canonical发布约束。
+
+
+## v1.4.2 r0.3 集中前检与低开销接续
+
+同工作区控制查询与写入互斥，收到CONTROL_LOCK_BUSY等原命令实际退出/回执终态，不轮询协调、不自动接管；未知锁保持恢复门。多个已提交消费者用一次 `kp check-chapters --chapter 13 --chapter 14 --workspace <workspace> --json`，逐项看all_current/refresh_actions，退出0不等于最终QA通过。正文修订用amend-chapter并等整条命令终态后才编辑，早期输出不授权提前apply_patch。
+
+内容计划新提交按各自section_id登记依赖，同源/同属性依赖不要求固定顺序。独立读者模板/数据在reader_files显式登记，须交assets/README.md和assets/THIRD_PARTY_NOTICES.md；程序仍用code_delivery。当前context中的导航/边界重复建议为派生提示，不改已批准标题、不机械删声明。理解当前任务必需的范围保留，共同范围可集中说明后短回指，内部审批话语不入正文。默认实跑仅证明无参数入口；多模式程序在既有自检核请求/实际模式、专用完成与通用完成、未运行/失败，缺设备保持未测，不增加重型调用。
+
+普通资源/reader_files在出片前一次reader-resource-preflight集中检查，不等昂贵汇编失败再逐项找缺文件；前检ready只表示此范围完整，不是执行/语义/发布批准。默认入口实跑不证明所有分支；多模式完成标签由现有编辑核正/反/未运行状态，不靠通用completed签专用成功。边界重复候选仅定位，同对象同范围再判断新增信息及独立操作需求，旧current证明可复用。两个以上canonical章节检查优先check-chapters，确认all_current，不逐章重复拉全局状态。
+
+使用现有repetition_value/reading_hierarchy核boundary_repetition_candidates：比较对象/适用范围/新增条件/独立阅读必要性。建议最多8组，每组当前及最多2处前文、每片段160字；同义改写可能漏检。候选不是完整比较材料，实际compared_unit_ids须在冻结前绑定必要原文；缺项明确返回并受控创建新候选，不在冻结后读取活书或把短摘录冒充已审全章。程序默认入口证据不覆盖真实设备/其他模式，先在现有审阅做有界正反与未运行核对。
+
+跨章重复边界表达先核对象、否定、数字、版本及范围；允许集中说明或短回指，必要风险/独立操作提醒保留。不按“未测”关键词批量删句，不把内部审批话语带入正文。技术保护触发交作者受控修订，不削弱保护器。
+
+昂贵汇编/出片前集中运行reader-resource-preflight，无ZIP时也可核预期闭包；缺README/NOTICES/模板或坏链接一次修齐。ready不是发布批准，原未知事务仍先恢复。book.md本地读者文件链统一../assets/，配套ZIP只含已声明资源及说明/许可；按ZIP根README将book.md置delivery/，独立解压与整体移动后仍可达。发布不补包，实跑只证明默认入口。新书默认空右页脚，封面版权按出版日期年份署“葬爱西兰花”；旧配置保留，显式出版更新才改变，不修改安装模板为单书热修。MD、纸面目录和书签须核文字/层级/正文目标页，计数不等于导航通过。

@@ -38,6 +38,7 @@ from knowledge_product_workflow.verification_context import (
 from knowledge_product_workflow.verification_context import exists as _v_exists
 from knowledge_product_workflow.verification_context import glob_files as _v_glob_files
 from knowledge_product_workflow.verification_context import is_file as _v_is_file
+from knowledge_product_workflow.verification_context import memoized_read as _memoized_read
 from knowledge_product_workflow.verification_context import mkdir as _v_mkdir
 from knowledge_product_workflow.verification_context import (
     read_bytes as _v_read_bytes,
@@ -832,11 +833,40 @@ def check_chapter_in_view(workspace: Workspace, chapter_number: int, source_path
     return _check_chapter(workspace, chapter_number, source_path)
 
 
+@_verification_read(transaction_view=True)
+def check_chapters(workspace: Workspace, chapter_numbers: list[int]) -> dict:
+    """Canonical chapters only, admitted once and checked in one guarded snapshot."""
+    from knowledge_product_workflow.production_intake import consistent_production_read
+    if (not chapter_numbers or any(type(n) is not int or n < 1 for n in chapter_numbers)
+            or len(set(chapter_numbers)) != len(chapter_numbers)):
+        raise ValueError("章节批次须为非空、不重复的正整数")
+    reports = []
+    with consistent_production_read(workspace, chapters=set(chapter_numbers)):
+        for number in chapter_numbers:
+            path = workspace.root / f"chapters/chapter-{number:02d}.md"
+            if not _v_is_file(path):
+                reports.append({"chapter_number": number, "state": "missing", "checks": {},
+                                "refresh_actions": ["先完成此章节；不在只读检查中生成"]})
+            else:
+                reports.append(check_chapter_in_view(workspace, number, path))
+    from knowledge_product_workflow.verification_context import current_verification
+    current_verification(workspace).verify_read_set()  # Reject mixed bytes before CLI can emit a coherent result.
+    return {"coherent_snapshot": True, "reports": reports,
+            "all_current": all(bool(r.get("checks")) and not r.get("refresh_actions")
+                               and all(v.get("state") in {"current", "not_required"} for v in r["checks"].values()) for r in reports),
+            "scope": "canonical_chapter_proofs_only; not final QA or publication approval"}
+
+
 def _check_chapter(workspace: Workspace, chapter_number: int, source_path: Path):
     from knowledge_product_workflow.workspace_transactions import (
         require_transaction_consistency_in_view as require_transaction_consistency,
     )
     require_transaction_consistency(workspace, chapters={chapter_number})
+    return _check_chapter_payload(workspace, chapter_number, source_path)
+
+
+@_memoized_read
+def _check_chapter_payload(workspace: Workspace, chapter_number: int, source_path: Path):
     source = _require_workspace_file(workspace, source_path, label="章节源稿")
     body = _reader_body_from_source(source).strip() + "\n"
     report: dict[str, object] = {

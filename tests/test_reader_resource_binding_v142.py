@@ -39,6 +39,22 @@ def test_exact_nonstandalone_excerpt_ignores_headings_inside_prompt(resource_cas
     assert len(bound) == 1 and len(bound[0]["excerpt_spans"]) == 1
 
 
+@pytest.mark.parametrize("invalid_source", [False, True])
+def test_cheap_encoding_check_distinguishes_source_text_from_binary_inputs(resource_case, invalid_source):
+    from knowledge_product_workflow import reader_artifacts
+    w, source, body = resource_case
+    (w.root/"assets/README.md").write_text("资源入口说明。", encoding="utf-8")
+    (w.root/"assets/THIRD_PARTY_NOTICES.md").write_text("自编软件夹具。", encoding="utf-8")
+    plan = reader_artifacts.require_current_content_plan(w, 1)
+    if invalid_source:
+        source.write_bytes(bytes([255]))
+    else:
+        (w.root/"assets/input.bin").write_bytes(bytes([255]))
+        plan.sections[0].code_delivery.input_files.append("assets/input.bin")
+    result = reader_artifacts.reader_resource_preflight(w, body)
+    assert result["ready"] is (not invalid_source)
+
+
 def test_same_excerpt_in_reader_book_and_quote_container(resource_case):
     workspace, _, body = resource_case
     body = body.replace("```python\n    return", "> ```python\n>     return").replace("r['current']]\n```", "r['current']]\n> ```")

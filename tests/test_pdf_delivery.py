@@ -52,7 +52,7 @@ def test_qmd_uses_the_approved_fixed_a4_layout(tmp_path: Path) -> None:
     assert "\\providecommand{\\KnowledgeProductTitle}{Guide}" in cover
     assert "\\providecommand{\\KnowledgeProductSubtitle}{专业知识教程}" in cover
     assert "\\providecommand{\\KnowledgeProductCoverLabel}{知识产品工作流}" in cover
-    assert "\\providecommand{\\KnowledgeProductFooterLabel}{知识产品工作流}" in cover
+    assert "\\providecommand{\\KnowledgeProductFooterLabel}{}" in cover
     assert missing_pdf_source_contracts(qmd_path) == []
 
 

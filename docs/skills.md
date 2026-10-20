@@ -6,6 +6,12 @@ Knowledge Product Workflow（KP）采用宿主驱动的多 Skill 协作模式：
 
 ## v1.4.2 读者任务与代码呈现
 
+蓝图批准前核目录：标题默认使用能区分同级范围的主题短语，任务动作留在学习目标、reader_job与导读。长度、动词开头及空泛词只产生候选提示；短问题、必要操作项与长术语允许语义保留。批准后沿唯一title生成正文/目录/书签，不在出版层截字或设别名。
+
+独立读者模板、数据和说明用内容计划reader_files显式声明（md/txt/csv/tsv/json/yaml/yml）；程序仍走code_delivery。只要有外置资源，就准备assets/README.md与assets/THIRD_PARTY_NOTICES.md；出版前一次`reader-resource-preflight --json`集中核缺项及普通本地链接。ready仅是资源范围诊断，不是程序全部分支/语义/发布批准。ZIP在最小交付根解压，assets/与delivery/book.md保持相对目录。
+
+同工作区只读查询仍互斥；CONTROL_LOCK_BUSY不代表死锁，不自动接管。多章canonical证明用`check-chapters --chapter 13 --chapter 14 --json`在单一视图检查，逐项核all_current。amend-chapter须等整条回调终态才编辑。跨章边界重复只给限量冻结建议，实质比较仍须绑定必要原文，不自动删句/重审全书。新书默认空右页脚，封面版权按出版年份署“葬爱西兰花”；旧配置保留到显式更新。
+
 Brief 先确认 `teaching_focus`：`method_practice`、`implementation` 或 `mixed`。方法类教程保留完整提示、输入输出、失败对照和迁移练习；完整运行器可放配套资源，正文只保留讲清机制所需的片段。实现类教程仍可保留必要完整代码，不为所有题材设统一行数硬上限。旧书需经原 Brief 变更与确认流程显式采用，升级不自动改正文。
 
 内容计划中的 `artifact_kind: prompt` 不要求附程序；`artifact_kind: code` 在新政策下须说明 `code_delivery`，选择 `inline_complete`、`excerpt_with_resource` 或 `resource_only`。资源路径限定本书 assets，片段按正文围栏序号与完整程序行号精确绑定；缺包、错绑、陈旧实跑证据不能发布。配套 ZIP 和成员清单随汇编事务生成，进入交付 QA 与最终交付清单；publish 不隐式补包。当前自动实跑只支持Python；其他语言资源可读但实跑未知时仍拒绝完整资源交付，不能把打包成功当已验证。

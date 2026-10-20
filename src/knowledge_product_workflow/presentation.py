@@ -234,7 +234,7 @@ class PublicationProfile(PublicationFeatureFields):
     revision: int = Field(default=1, ge=1)
     subtitle: str = Field(min_length=1, max_length=180)
     cover_label: str = Field(min_length=1, max_length=100)
-    footer_label: str = Field(min_length=1, max_length=100)
+    footer_label: str = Field(min_length=0, max_length=100)
     copyright_line: str = Field(min_length=1, max_length=180)
     edition_label: str = Field(min_length=1, max_length=80)
     publication_date: date
@@ -302,6 +302,8 @@ class PublicationProfile(PublicationFeatureFields):
     )
     @classmethod
     def normalize_required_text(cls, value: str, info) -> str:
+        if info.field_name == "footer_label" and value == "":
+            return ""
         cleaned = value.strip()
         if not cleaned:
             raise ValueError(f"{info.field_name} 不能为空")
@@ -353,7 +355,7 @@ class PublicationMetadata(PublicationFeatureFields):
     edition_label: str = Field(min_length=1, max_length=80)
     publication_date: date
     cover_label: str = Field(min_length=1, max_length=100)
-    footer_label: str = Field(min_length=1, max_length=100)
+    footer_label: str = Field(min_length=0, max_length=100)
     copyright_line: str = Field(min_length=1, max_length=180)
     body_font_size: int
     brand_color_intent: str = "橙色基调"
@@ -384,6 +386,8 @@ class PublicationMetadata(PublicationFeatureFields):
     )
     @classmethod
     def normalize_required_text(cls, value: str, info) -> str:
+        if info.field_name == "footer_label" and value == "":
+            return ""
         cleaned = value.strip()
         if not cleaned:
             raise ValueError(f"{info.field_name} 不能为空")
@@ -459,6 +463,8 @@ class PublicationUpdateInput(PublicationFeatureFields):
     def normalize_optional_text(cls, value: str | None, info) -> str | None:
         if value is None:
             return None
+        if info.field_name == "footer_label" and value == "":
+            return ""
         cleaned = value.strip()
         if not cleaned:
             raise ValueError(f"{info.field_name} 不能是空白字符串")
@@ -526,7 +532,7 @@ def validate_cover_contract(profile, title: str | None = None) -> None:
     if profile.cover_layout_revision == 2:
         if not profile.cover_summary_zh:
             raise ValueError("封面布局2须先确认非空中文梗概")
-        copyright = profile.copyright_line or f"© {datetime.now(UTC).year} 知识产品工作流"
+        copyright = profile.copyright_line or f"© {profile.publication_date.year} 葬爱西兰花"
         if not re.fullmatch(r"©\s+\d{4}\s+\S.*", copyright):
             raise ValueError("封面布局2版权行须为：© 年份 署名；请在出版预览确认修正")
     if profile.cover_title_lines and title is not None:
@@ -585,8 +591,8 @@ def _defaults(language: str, publication_date: date) -> dict[str, str]:
     return {
         "subtitle": subtitle,
         "cover_label": "知识产品工作流",
-        "footer_label": "知识产品工作流",
-        "copyright_line": f"© {publication_date.year} 知识产品工作流",
+        "footer_label": "",
+        "copyright_line": f"© {publication_date.year} 葬爱西兰花",
         "edition_label": "v1.0.0",
     }
 
@@ -646,7 +652,7 @@ def _legacy_seed(
     return {
         "subtitle": overrides.subtitle or values["subtitle"],
         "cover_label": overrides.publisher_label or values["cover_label"],
-        "footer_label": overrides.publisher_label or values["footer_label"],
+        "footer_label": values["footer_label"],
         "copyright_line": overrides.copyright_line or (
             f"© {published_on.year} {overrides.publisher_label}"
             if overrides.publisher_label and not legacy_metadata else values["copyright_line"]
@@ -670,7 +676,7 @@ def load_or_create_publication_profile(
     path = publication_profile_path(workspace)
     if _v_is_file(path):
         return _read_profile(path)
-    published_on = today or datetime.now(UTC).date()
+    published_on = (overrides.publication_date if overrides and overrides.publication_date else today) or datetime.now(UTC).date()
     seed = _legacy_seed(
         overrides,
         _defaults(language, published_on),

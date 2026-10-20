@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+import unicodedata
 from collections.abc import Iterable
 
 from knowledge_product_workflow.quality import QualityFinding, Severity
@@ -66,6 +67,42 @@ _COMMAND_OR_PATH = re.compile(
     r"(?:python(?:\d(?:\.\d+)?)?|py|pwsh|powershell|bash|sh|echo|git|kp|curl|pip|uv|npm|node)\s)",
     re.IGNORECASE,
 )
+
+
+def heading_navigation_guidance() -> dict:
+    """Shared naming advice, not a linguistic classifier or a new approval."""
+    return {
+        "title_rule": "章名默认以主题/核心概念短语为入口，加必要限定以区分同级范围；不要整树都写成先/把/让的任务流水。",
+        "action_rule": "学习路径仍任务导向；完整动作保留learning_objectives、reader_job和导读，不把任务句直接当title。",
+        "exceptions": "必要短问题、操作项与长术语可保留；不能短成基础/实战等空泛词，也不删范围/否定/参数。",
+        "review": "原蓝图批准前审完整目录与主题对应；批准后不自行改名，旧书warning不改变已有证明。",
+        "examples": [{"task": "从一句中文到下一枚token", "topic": "分词与解码"},
+                     {"task": "在相同领域任务上实践QLoRA", "topic": "QLoRA量化微调"}],
+        "automatic_semantic_approval": False,
+        "display_length_candidate_over": 24,
+    }
+
+
+def heading_navigation_diagnostics(headings: list[dict], *, language: str) -> list[dict]:
+    """Linear title-only candidates; never edit, reject, or approve semantics."""
+    result = []
+    generic = {"基础", "概述", "实战", "入门", "核心概念", "知识点", "机制", "方法"}
+    for row in headings:
+        title = unicodedata.normalize("NFC", str(row["title"])).strip()
+        visible = re.sub(r"^\d+(?:\.\d+)*[.)、]?\s+", "", title).replace("`", "").replace("*", "")
+        length = sum(1 if unicodedata.east_asian_width(c) in {"W", "F"} else .5 for c in visible)
+        signals = []
+        if visible in generic:
+            signals.append("generic_topic")
+        if language == "zh-CN" and re.match(r"^(?:先|把|让|给|完成一次|用.{1,28}(?:完成|建立|修复|量化)|在.{1,28}实践)", visible):
+            signals.append("task_sentence")
+        if length > 24:
+            signals.append("long_label")
+        for signal in signals:
+            result.append({"number": str(row["number"]), "location": row.get("location", str(row["number"])),
+                           "signal": signal, "severity": "warning", "evidence": title[:120],
+                           "message": "核主题是否清楚、同级是否可区分；保留必要条件，不按词性/字数自动判定或改名。"})
+    return result
 
 
 def find_math_code_findings(markdown: str, location: str) -> list[QualityFinding]:
@@ -181,6 +218,7 @@ def scan_markdown_content(markdown: str, location: str) -> list[QualityFinding]:
     visible_lines: list[tuple[int, str]] = []
     headings: dict[tuple[str, int, str], int] = {}
     chapter_scope = ""
+    navigation_rows = []
     fence_character = ""
     fence_length = 0
 
@@ -221,6 +259,10 @@ def scan_markdown_content(markdown: str, location: str) -> list[QualityFinding]:
         if heading is not None:
             level = len(heading.group(1))
             heading_text = heading.group(2).strip()
+            numbered = re.match(r"(\d+(?:\.\d+)*)[.]?\s+(.+)", heading_text)
+            if numbered:
+                navigation_rows.append({"number": numbered[1], "level": level, "title": numbered[2],
+                                        "location": f"{location}:第 {line_number} 行", "parent_number": None})
             normalized_heading = _normalize(heading_text)
             if level == 1:
                 chapter_scope = normalized_heading
@@ -317,4 +359,7 @@ def scan_markdown_content(markdown: str, location: str) -> list[QualityFinding]:
                 ),
             )
         )
+    for item in heading_navigation_diagnostics(navigation_rows, language="zh-CN"):
+        findings.append(QualityFinding(code="HEADING_NAVIGATION_" + item["signal"].upper(),
+            severity=Severity.WARNING, location=item["location"], message=item["message"]))
     return findings

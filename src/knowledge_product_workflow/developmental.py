@@ -170,25 +170,25 @@ def _premise_audit_required(workspace: Workspace) -> bool:
 
 
 @_verification_read(transaction_view=True)
-def book_reading_index(workspace: Workspace, chapter_number: int, body: str, *, chapter_numbers: set[int] | None = None) -> list[dict]:
+def book_reading_index(workspace: Workspace, chapter_number: int, body: str, *, chapter_numbers: set[int] | None = None, include_boundary_snippets: bool = False) -> list[dict]:
     """Derived locations/jobs, not another content or fact source."""
     from knowledge_product_workflow.production_intake import consistent_production_read
     with consistent_production_read(workspace, chapters={chapter_number} if binding_policy_revision(workspace) == 2 else None):
-        return _book_reading_index(workspace, chapter_number, body, chapter_numbers=chapter_numbers)
+        return _book_reading_index(workspace, chapter_number, body, chapter_numbers=chapter_numbers, include_boundary_snippets=include_boundary_snippets)
 
 
-def book_reading_index_in_view(workspace: Workspace, chapter_number: int, body: str, *, chapter_numbers: set[int] | None = None) -> list[dict]:
+def book_reading_index_in_view(workspace: Workspace, chapter_number: int, body: str, *, chapter_numbers: set[int] | None = None, include_boundary_snippets: bool = False) -> list[dict]:
     """Reuse only a covering parent read guard; public calls still snapshot afresh."""
     from knowledge_product_workflow.production_intake import _has_covering_production_read
     from knowledge_product_workflow.workspace_transactions import has_transaction_read_view
 
     chapters = {chapter_number} if binding_policy_revision(workspace) == 2 else None
     if has_transaction_read_view(workspace) and _has_covering_production_read(workspace, chapters):
-        return _book_reading_index(workspace, chapter_number, body, chapter_numbers=chapter_numbers)
-    return book_reading_index(workspace, chapter_number, body, chapter_numbers=chapter_numbers)
+        return _book_reading_index(workspace, chapter_number, body, chapter_numbers=chapter_numbers, include_boundary_snippets=include_boundary_snippets)
+    return book_reading_index(workspace, chapter_number, body, chapter_numbers=chapter_numbers, include_boundary_snippets=include_boundary_snippets)
 
 
-def _book_reading_index(workspace: Workspace, chapter_number: int, body: str, *, chapter_numbers: set[int] | None = None) -> list[dict]:
+def _book_reading_index(workspace: Workspace, chapter_number: int, body: str, *, chapter_numbers: set[int] | None = None, include_boundary_snippets: bool = False) -> list[dict]:
     bodies = {}
     from knowledge_product_workflow.workspace_transactions import pending_workspace_transactions
     pending_paths = {relative for tx in pending_workspace_transactions(workspace)
@@ -217,13 +217,15 @@ def _book_reading_index(workspace: Workspace, chapter_number: int, body: str, *,
     context = _v_current_context(workspace)
     for number, text in sorted(bodies.items()):
         strict_plan = number == chapter_number or chapter_numbers is not None
-        compute = lambda number=number, text=text, strict_plan=strict_plan: _reading_index_rows(workspace, number, text, strict_plan=strict_plan)
-        rows = context.memo(("reading-index-rows.v2", number, _sha256_text(text), strict_plan), compute) if context is not None else compute()
+        compute = lambda number=number, text=text, strict_plan=strict_plan: _reading_index_rows(workspace, number, text, strict_plan=strict_plan, include_boundary_snippets=include_boundary_snippets)
+        rows = context.memo(("reading-index-rows.v2", number, _sha256_text(text), strict_plan, include_boundary_snippets), compute) if context is not None else compute()
         result.extend(rows)
     return result
 
 
-def _reading_index_rows(workspace: Workspace, number: int, text: str, *, strict_plan: bool) -> list[dict]:
+def _reading_index_rows(workspace: Workspace, number: int, text: str, *, strict_plan: bool, include_boundary_snippets: bool = False) -> list[dict]:
+    if not text.strip():
+        return []
     from knowledge_product_workflow.workflows.curriculum import require_current_submitted_blueprint
 
     context = _v_current_context(workspace)
@@ -245,7 +247,12 @@ def _reading_index_rows(workspace: Workspace, number: int, text: str, *, strict_
     sections = {section.section_id: section for section in plan.sections} if plan else {}
     titles = {match.group(1): match.group(2) for match in
               re.finditer(r"^#{2,6}\s+(\d+(?:\.\d+)+)\s+([^\n]+)$", text, re.MULTILINE)}
+    visible = _reference_text(text) if include_boundary_snippets else ""
+    visible_lines = visible.splitlines()
+    units = reading_units(text)
     return [{"unit_id": unit["unit_id"], "chapter_number": number,
+                   **({"boundary_snippets": _boundary_snippets(visible_lines, unit["start_line"],
+                       next((u["start_line"] for u in units if u["start_line"] > unit["start_line"]), len(visible_lines) + 1))} if include_boundary_snippets else {}),
                    "plan_status": "invalid_plan_deferred" if plan_error else "current" if plan else "body_only_undeclared" if number not in declared_numbers else "legacy_not_required",
                    "plan_error": plan_error,
                    "title": titles.get(unit["unit_id"], ""),
@@ -257,7 +264,58 @@ def _reading_index_rows(workspace: Workspace, number: int, text: str, *, strict_
                        "task": sections[unit["unit_id"]].model_dump(mode="json")
                        if unit["unit_id"] in sections else None}, sort_keys=True)),
                    "source": f"chapters/chapter-{number:02d}.md"}
-                  for unit in reading_units(text)]
+                  for unit in units]
+
+
+def _boundary_snippets(lines: list[str], start: int, end: int) -> list[dict]:
+    result = []
+    for offset in range(start - 1, min(end - 1, len(lines))):
+        text = lines[offset].strip()
+        if text and not text.startswith(("#", ">", "|")) and re.search(
+                r"未(?:实测|验证|运行|执行)|不(?:代表|等于|保证|构成)|仅(?:用于|验证|适用于)|范围|不能.*(?:推断|证明)", text):
+            result.append({"line": offset + 1, "quote": text[:160],
+                           "exact_key": _sha256_text(re.sub(r"\s+", "", text))})
+    return result[:8]
+
+
+def boundary_repetition_candidates(index: list[dict], chapter_number: int) -> dict:
+    """Conservative exact candidates only; conditions/numbers/negations stay intact."""
+    prior = {}
+    for row in index:
+        if row["chapter_number"] < chapter_number:
+            for snippet in row.get("boundary_snippets", []):
+                prior.setdefault(snippet["exact_key"], []).append({
+                    "unit_id": row["unit_id"], "source": row["source"],
+                    "comparison_sha256": row["comparison_sha256"],
+                    "line": snippet["line"], "quote": snippet["quote"]})
+    groups = []
+    for row in index:
+        if row["chapter_number"] != chapter_number:
+            continue
+        for snippet in row.get("boundary_snippets", []):
+            if matches := prior.get(snippet["exact_key"]):
+                groups.append({"current": {"unit_id": row["unit_id"], "line": snippet["line"], "quote": snippet["quote"]},
+                    "previous": matches[:2], "needs_semantic_review": True,
+                    "reason": "同字边界表达候选；先核对象/范围/独立阅读需要，不自动删除或签通过"})
+    covered = sorted({r["unit_id"] for r in index})
+    return {"schema_version": 1, "advisory_only": True, "candidates": groups[:8],
+            "total_candidates": len(groups), "truncated": len(groups) > 8,
+            "covered_unit_ids": covered, "uncovered_unit_count": None,
+            "coverage": "仅现存读取单元；缺失/未来单元未知，不宣称全书扫描",
+            "semantic_comparison_rule": "短片段不是完整比较证据；实际compared_unit_ids须先冻结原比较单元，缺失则新候选补齐，不读活书。",
+            "editor_questions": "同对象同范围吗？有新增条件吗？此处需独立操作吗？可合并或短回指吗？医疗/法律等必要提醒不能机械删除；漏检同义改写由既有编辑判断。"}
+
+
+def boundary_repetition_context(workspace: Workspace, chapter_number: int, body: str = "") -> dict:
+    index = book_reading_index_in_view(workspace, chapter_number, "", include_boundary_snippets=True)
+    units = reading_units(body)
+    lines = _reference_text(body).splitlines()
+    for i, unit in enumerate(units):
+        index.append({"unit_id": unit["unit_id"], "chapter_number": chapter_number,
+            "source": f"chapters/chapter-{chapter_number:02d}.md", "comparison_sha256": unit["unit_sha256"],
+            "boundary_snippets": _boundary_snippets(lines, unit["start_line"],
+                units[i + 1]["start_line"] if i + 1 < len(units) else len(lines) + 1)})
+    return boundary_repetition_candidates(index, chapter_number)
 
 
 def _validate_teaching_checks(observation: StructureObservation, revision: int) -> None:
@@ -1014,12 +1072,18 @@ def _create_structure_review_template(workspace: Workspace, chapter_number: int,
     if binding_policy_revision(workspace) == 2:
         binding["contract_static_sha256"] = proof_contract_digest(workspace, chapter_number, "structure_contract")
     reusable = _reusable_observations(workspace, chapter_number, binding, units, body)
-    index = book_reading_index(workspace, chapter_number, body)
+    raw_index = book_reading_index(workspace, chapter_number, body, include_boundary_snippets=True)
+    boundary_advice = boundary_repetition_candidates(raw_index, chapter_number)
+    index = [{key: value for key, value in row.items() if key != "boundary_snippets"} for row in raw_index]
     index_path = workspace.root / "runs/editorial/book-reading-index.json"
     _v_mkdir(index_path.parent,parents=True,exist_ok=True)
     _v_write_text(index_path, json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     previous_sha = _sha256_file(structure_review_path(workspace, chapter_number)) if reusable else None
-    from knowledge_product_workflow.example_checks import example_evidence_for_body
+    from knowledge_product_workflow.example_checks import (
+        _observed_execution_scope,
+        example_evidence_for_body,
+    )
+    execution_evidence = example_evidence_for_body(workspace, body)
     factual_prompts = [{"line": line_number, "text": line.strip(), "question": "本主张的输入、成立条件、真实来源或实际执行输出是否齐备？缺少条件时保留未知，不补造数值或真实事件。"}
                        for line_number, line in enumerate(_reference_text(body).splitlines(), 1)
                        if re.search(r"(?:运行|执行|计算).{0,18}(?:得到|输出|结果)|真实(?:案例|事件)|\d+(?:\.\d+)?%|(?:得分|数值|结果).{0,10}(?:为|等于|变为|趋近)", line)]
@@ -1040,7 +1104,10 @@ def _create_structure_review_template(workspace: Workspace, chapter_number: int,
             "review_context_delta": _review_context_delta(previous, context_inputs, units),
             "comparison_context_delta": _comparison_context_delta(previous, index),
             "dependency_context": review_dependencies(workspace, chapter_number, body),
-            "execution_evidence": example_evidence_for_body(workspace, body),
+            "execution_evidence": execution_evidence,
+            "resource_execution_scopes": [{"resource_path": item.get("resource_path"),
+                "execution_scope": _observed_execution_scope(item), "display_only": True}
+                for item in execution_evidence if item.get("binding_scope") == "reader_resource"],
             "fact_check_prompts": factual_prompts,
             "assertion_prompts": assertions,
             "assertion_support_context": support_context,
@@ -1058,6 +1125,7 @@ def _create_structure_review_template(workspace: Workspace, chapter_number: int,
                 "review_sequence": ["读取具体输入与当前代码/图关系", "寻找缺失前提和不满足条件的反例",
                                     "核实际输出及执行范围", "限定结论范围后判断supported/unsupported/uncertain"]},
             "review_questions": ["本单元相对已写内容新增了什么判断或操作？列具体比较单元与增量，不按段落或图数打分。",
+                                 "标题是否突出主题、能区分同级范围？任务留目标/reader_job；已批准名不因新命名偏好改revise，不能自行改标题。",
                                  "图/表/代码是否互补，还是以不同形式重复同一结论？",
                                  "没有真实作者外上下文时明确审核局限；辅助自评不能宣称正式独立审稿。"],
             **({"reader_presentation": guidance, "reader_presentation_metrics": reader_presentation_metrics(body)}
@@ -1070,6 +1138,9 @@ def _create_structure_review_template(workspace: Workspace, chapter_number: int,
                 "semantic_truth_machine_verified":False},
             "required_unit_ids": [u['unit_id'] for u in units if u['required']],
             "book_reading_index": index,
+            "boundary_repetition_candidates": (json.loads(_v_read_text(workspace.root / "runs/editorial/frozen-boundary-advice.json", encoding="utf-8"))
+                if _v_is_file(workspace.root / "runs/editorial/frozen-boundary-advice.json")
+                else boundary_advice),
             "reusable_unit_ids": [u["unit_id"] for u in units if u["required"] and u["unit_id"] in reusable],
             "reuse_evidence_sha256": previous_sha,
             "observations": [{"unit_id": u["unit_id"], "assessment": "uncertain",

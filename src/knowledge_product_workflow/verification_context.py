@@ -46,6 +46,7 @@ class VerificationContext:
         self._directory_captures: list[set[tuple[Path, str]]] = []
         self._directories: dict[tuple[Path, str], frozenset[Path]] = {}
         self._input_aliases: dict[Path, Path] = {}
+        self._canonical_inputs: set[Path] = set()
         self._untracked_reads = 0
         self.closed = False
         self.phase = 0
@@ -72,13 +73,22 @@ class VerificationContext:
             raise SnapshotChangedError("验证期间工作区根路径归属发生变化；核对原操作")
 
     def _resolve_input(self, path: Path) -> Path:
+        original = path.absolute()
+        if original in self._canonical_inputs:
+            return self._input_aliases[original]
         resolved = path.resolve()
-        if path.absolute() != resolved:
+        if original != resolved:
             # Do not memoize alias reads, even inside root. Retain the first
             # target as well: unchanged old bytes do not prove the alias still
             # names that target at a write/exit boundary.
             self._untracked_reads += 1
-            self._input_aliases.setdefault(path.absolute(), resolved)
+            self._input_aliases.setdefault(original, resolved)
+        elif not self.volatile(resolved) and resolved.is_relative_to(self.root):
+            # Pure proof paths share the action snapshot. Live admission paths
+            # still resolve afresh; every controlled write/exit re-resolves all
+            # observed paths, including initially canonical paths, before use.
+            self._input_aliases.setdefault(original, resolved)
+            self._canonical_inputs.add(original)
         return resolved
 
     @staticmethod
@@ -255,9 +265,21 @@ class VerificationContext:
     def verify_read_set(self) -> None:
         self._ensure_open()
         self._verify_root()
+        parents = {}
         for original, expected in self._input_aliases.items():
             try:
-                current = original.resolve()
+                if original in self._canonical_inputs:
+                    parent = original.parent
+                    if parent not in parents:
+                        parents[parent] = parent.resolve()
+                    # Canonical siblings share parent resolution only within
+                    # this single freshness check. A leaf reparse point still
+                    # resolves independently; original aliases always do too.
+                    current = (original.resolve() if parents[parent] != parent
+                        or original.is_symlink() or getattr(original, "is_junction", lambda: False)()
+                        else original)
+                else:
+                    current = original.resolve()
             except (OSError, RuntimeError):
                 raise SnapshotChangedError("验证期间输入路径别名归属发生变化；核对原操作") from None
             if current != expected:
@@ -282,6 +304,8 @@ class VerificationContext:
             actual = frozenset(p.resolve() for p in directory.glob(pattern))
             if actual != expected:
                 raise SnapshotChangedError("验证期间目录输入发生变化；核对原操作")
+        if any(parent.resolve() != observed for parent, observed in parents.items()):
+            raise SnapshotChangedError("核验期间输入父目录归属变化；拒绝写入")
 
 
 @contextmanager
@@ -323,6 +347,7 @@ def verification_scope(workspace, *, context=None, view_id="canonical"):
             selected._path_existence.clear()
             selected._latest_live.clear()
             selected._input_aliases.clear()
+            selected._canonical_inputs.clear()
 
 
 def verified_read(function=None, *, transaction_view=False):
@@ -421,6 +446,53 @@ def write_bytes(path: Path, data):
     result = path.write_bytes(data)
     after_write(path)
     return result
+
+
+def atomic_metadata_text(target: Path, text: str) -> None:
+    """Stage exclusive unpublished controller JSON; full freshness at publication.
+
+    Like private_staging, allocating an owned temporary file is not a business
+    commit. This avoids validating the entire book twice for one os.replace.
+    Canonical writes still pass replace_file -> atomic_replace -> before_write.
+    """
+    from uuid import uuid4
+
+    from knowledge_product_workflow.atomic_files import replace_file
+
+    contexts = list(_write_contexts(target))
+    if not contexts:
+        # Public/domain callers without a verification scope keep the old gate.
+        before_write(target)
+    for context in contexts:
+        context._ensure_open()
+        context._verify_root()
+        relative = target.absolute().relative_to(context.root)
+        if relative.parts[:2] != ("runs", "orchestration") or target.suffix != ".json":
+            raise ValueError("私有元数据暂存仅限受控编排JSON；正文仍走原事务")
+    parent = target.parent.absolute()
+    if parent.resolve() != parent:
+        raise ValueError("私有元数据暂存目录不得为链接/junction")
+    info = parent.stat(follow_symlinks=False)
+    identity = (info.st_dev, info.st_ino)
+    temporary = parent / f".{target.name}.{uuid4().hex}.tmp"
+    data = text.encode("utf-8")
+    with temporary.open("xb") as stream:
+        stream.write(data)
+        staged = os.fstat(stream.fileno())
+    after_write(temporary)
+    current = temporary.stat(follow_symlinks=False)
+    observed_parent = parent.stat(follow_symlinks=False)
+    if (parent.resolve() != parent or (observed_parent.st_dev, observed_parent.st_ino) != identity
+            or temporary.is_symlink() or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+            or (current.st_dev, current.st_ino) != (staged.st_dev, staged.st_ino)):
+        raise ValueError("私有元数据暂存归属已变化；保留残留，不发布")
+    for context in contexts:
+        context._input_aliases[temporary] = temporary
+        if context.read_bytes(temporary) != data:
+            raise SnapshotChangedError("私有元数据暂存字节已变化；不发布")
+    replace_file(temporary, target)  # Mandatory original full byte/directory/alias gate.
+    for context in contexts:
+        context._input_aliases.pop(temporary, None)  # Owned staging lifetime ended at replace.
 
 
 class _PrivateStaging:

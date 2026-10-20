@@ -46,6 +46,7 @@ def inputs(w, number, count):
         2, [{"section_id": f"{number}.1", "decision": "none", "alternative_rationale": RATIONALE}]
     )
     raw["sections"][0]["section_id"] = f"{number}.1"
+    raw["sections"][0]["production_dependencies"] = []
     p = w.root / f"runs/perf-plan-{number}.yaml"
     p.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8", newline="\n")
     body = _body().replace("1.", f"{number}.").replace("基础判断", f"章节{number}")

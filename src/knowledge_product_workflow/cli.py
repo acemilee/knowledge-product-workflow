@@ -312,7 +312,7 @@ class WorkflowCommand(ChineseTyperCommand):
 
     def invoke(self, ctx):
         workspace = ctx.params.get("workspace")
-        readonly = {"identity", "commands", "doctor", "status", "check-chapter", "recovery-view", "operation-status", "wait-operation",
+        readonly = {"identity", "commands", "doctor", "status", "check-chapter", "check-chapters", "reader-resource-preflight", "recovery-view", "operation-status", "wait-operation",
                     "preview-change-impact", "production-plan", "orchestration-migration-preview"}
         allowed = (self.name in readonly or self.name.endswith("-schema")
                    or self.name.startswith(("recover", "production-recover", "cancel", "pause"))
@@ -328,7 +328,7 @@ class WorkflowCommand(ChineseTyperCommand):
                 raise typer.Exit(1) from error
         cached = {"status", "recovery-view", "submit-content-plan", "draft", "checkpoint-chapter-content",
                   "submit-chapter", "humanize-check", "developmental-check", "record-developmental-review",
-                  "check-chapter", "validate", "assemble", "production-plan", "preview-change-impact",
+                  "check-chapter", "check-chapters", "reader-resource-preflight", "amend-chapter", "validate", "assemble", "production-plan", "preview-change-impact",
                   "refresh-chapter-proofs", "recheck-chapter", "compile-contracts", "submit-outline",
                   "validate-delivery", "publish", "pdf-observation-template", "record-pdf-visual-observations"}
         if workspace is not None and self.name in cached:
@@ -2061,7 +2061,11 @@ def route(
 ) -> None:
     """确定当前唯一允许的 Skill，并可选写入受限工作工单。"""
     opened_workspace = _open_workspace(workspace)
-    decision = route_workflow(opened_workspace)
+    try:
+        decision = route_workflow(opened_workspace)
+    except ValueError as error:
+        typer.echo(f"暂不可路由：{error}", err=True)
+        raise typer.Exit(1) from error
     if write_work_order:
         work_order = create_work_order(opened_workspace, decision)
         decision = decision.model_copy(
@@ -3049,12 +3053,12 @@ def amend_chapter(
     opened_workspace = _open_workspace(workspace)
     try:
         output = amend_chapter_draft(opened_workspace, chapter_number, reason)
+        supersede_orchestration_work_orders(opened_workspace, f"第 {chapter_number} 章已进入受控修订")
+        create_orchestration_work_order(opened_workspace)
     except (FileNotFoundError, ValueError) as error:
-        typer.echo(f"无法发起章节修订：{error}", err=True)
+        typer.echo(f"修订命令未完成：{error}；可能已重开并保留原归档，先核当前工件/工单终态，不重复重开或提前编辑。", err=True)
         raise typer.Exit(code=1) from error
-    supersede_orchestration_work_orders(opened_workspace, f"第 {chapter_number} 章已进入受控修订")
-    create_orchestration_work_order(opened_workspace)
-    typer.echo(f"已创建可修订正文版本：{output}")
+    typer.echo(f"修订命令已完成，可开始编辑正文版本：{output}")
 
 
 @zh_command("humanize-check")
@@ -3557,6 +3561,22 @@ def check_chapter_command(
         typer.echo(f"下一步：{action}")
 
 
+@zh_command("check-chapters")
+def check_chapters_command(workspace: WorkspacePath,
+    chapters: Annotated[list[int], typer.Option("--chapter", min=1, help="可重复；只检查已保存canonical章节")],
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """单进程一致视图批量只读检查；exit0不等于全项current或最终QA通过。"""
+    from knowledge_product_workflow.chapter_compliance import check_chapters
+    try:
+        result = check_chapters(_open_workspace(workspace), chapters)
+    except (OSError, ValueError) as error:
+        typer.echo(f"批量检查未完成：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2) if json_output else
+               f"一致快照={result['coherent_snapshot']}；全部current={result['all_current']}；仍需最终QA。")
+
+
 @zh_command("chapter-compliance-template")
 def chapter_compliance_template_command(
     chapter_number: int,
@@ -3811,12 +3831,70 @@ def create_review_work_order_command(chapter_number: int, workspace: WorkspacePa
     typer.echo(f"已创建审稿工单：{path}；唯一输出：{work_order.output_path}")
 
 
+@zh_command("reader-resource-preflight")
+def reader_resource_preflight_command(workspace: WorkspacePath,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """只读资源前检，一次列全缺项；不核执行历史，不授予出版权限。同工作区仍须串行查询。"""
+    from knowledge_product_workflow.publishing import resource_preflight_for_chapters
+    try:
+        result = resource_preflight_for_chapters(_open_workspace(workspace))
+    except (OSError, ValueError) as error:
+        typer.echo(f"资源前检未完成：{error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2) if json_output else
+               f"资源前检ready={result['ready']}；问题={result['findings']}；不代表已批准或可发布。")
+    if not result["ready"]:
+        raise typer.Exit(1)
+
+
+def _resource_preflight_or_exit(workspace):
+    from knowledge_product_workflow.publishing import require_reader_resource_preflight
+    try:
+        require_reader_resource_preflight(workspace)
+    except (OSError, ValueError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
+def _assembly_failure_hint(error, operation_id):
+    winerror = getattr(error, "winerror", None)
+    if winerror in {32, 33}:
+        hint = "文件共享/锁冲突，先释放实际占用"
+    elif isinstance(error, PermissionError) or winerror == 5:
+        hint = "权限拒绝，核目标目录与文件权限"
+    elif isinstance(error, FileNotFoundError):
+        hint = "缺少输入文件；先运行reader-resource-preflight并补齐具体缺项"
+    elif isinstance(error, ValueError):
+        hint = "输入或契约无效；按原错误定位，不自动重试/结案"
+    else:
+        hint = f"保留原异常类别{type(error).__name__}，先核实际失败阶段"
+    if operation_id:
+        hint += f"；原操作={operation_id}，先operation-status/recover-operation核终态，禁止重发"
+    else:
+        hint += "；未创建本次操作回执，不臆造恢复ID"
+    return f"汇编未完成：{error}；{hint}"
+
+
 @zh_command()
 def assemble(workspace: WorkspacePath,
     operation_id: Annotated[str | None, typer.Option("--operation-id", help="本次原操作标识；未知/未恢复时不重发")] = None,
 ) -> None:
     """将章节工件汇编为规范 Markdown。"""
     opened_workspace = _open_workspace(workspace)
+    if operation_id is not None:
+        from knowledge_product_workflow.operation_receipts import operation_status, receipt_path
+        try:
+            original_path = receipt_path(opened_workspace, operation_id)
+            if original_path.is_file():
+                original = operation_status(opened_workspace, operation_id)
+                typer.echo(f"原操作={operation_id}，阶段={original.get('phase', 'unknown')}；"
+                           "先operation-status/recover-operation核原终态，不重发汇编或创建新回执。", err=True)
+                raise typer.Exit(1)
+        except (OSError, ValueError) as error:
+            typer.echo(f"无法安全核对原操作：{error}；停止，不重发。", err=True)
+            raise typer.Exit(1) from error
+    _resource_preflight_or_exit(opened_workspace)
     try:
         action_work_order_id = _prepare_delivery_action(opened_workspace, "assemble")
     except (WorkflowAuthorizationError, OrchestrationWorkOrderError) as error:
@@ -3831,7 +3909,7 @@ def assemble(workspace: WorkspacePath,
             output = assemble_book(opened_workspace)
             finish_operation(opened_workspace, receipt.operation_id)
     except (OSError, ValueError) as error:
-        typer.echo(f"汇编未完成：{error}；原操作={current_operation or operation_id}。关闭文件占用后查询operation-status/recover-operation，不重发汇编。", err=True)
+        typer.echo(_assembly_failure_hint(error, current_operation or operation_id), err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"已汇编 Markdown：{output}")
 
@@ -3842,6 +3920,7 @@ def render_pdf_command(workspace: WorkspacePath,
         help="本地编译预算秒数；不改变网络超时或自动重试")] = 300) -> None:
     """将汇编后的 Quarto 源稿渲染为 PDF 交付物。"""
     opened_workspace = _open_workspace(workspace)
+    _resource_preflight_or_exit(opened_workspace)
     try:
         authorize_command(opened_workspace, "render-pdf")
     except WorkflowAuthorizationError as error:

@@ -175,7 +175,7 @@ def verify_artifact(path: str) -> bool:
     assert count_pdf_external_links(pdf_path) >= 1
     rendered_pages = [page.extract_text() or "" for page in PdfReader(pdf_path).pages]
     assert "Table of Contents" in rendered_pages[1]
-    assert "知识产品工作流" in rendered_pages[1]
+    assert "知识产品工作流" not in rendered_pages[1]
     assert "def verify_artifact" in "\n".join(rendered_pages)
     assert "verify_artifact(path)" in "\n".join(rendered_pages)
     assert "runs/" in "\n".join(rendered_pages)

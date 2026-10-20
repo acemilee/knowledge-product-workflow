@@ -140,6 +140,7 @@ class ProductionTask(BaseModel):
     state: str = "edit_ready"
     input_manifest_sha256: str
     input_bindings: dict[str, str] = Field(default_factory=dict)
+    boundary_repetition_advice: dict = Field(default_factory=dict)
     source_relative: str | None = None
     candidate_context_path: str | None = None
     candidate_source_sha256: str | None = None
@@ -214,7 +215,7 @@ class ProductionRun(BaseModel):
             raise ValueError("任务不属于当前运行")
         return item
 
-    def add_writer(self, number: int, bindings: dict, *, version: int = 1) -> ProductionTask:
+    def add_writer(self, number: int, bindings: dict, *, version: int = 1, advice: dict | None = None) -> ProductionTask:
         if any(t.chapter_number == number and t.role == "writer"
                and t.state not in {"accepted", "superseded", "cancelled"} for t in self.tasks):
             raise ValueError("同章已有作者任务")
@@ -223,7 +224,9 @@ class ProductionRun(BaseModel):
             task_id=task_id, run_id=self.run_id, chapter_number=number,
             candidate_version=version, role="writer", input_bindings=bindings, ready_since_dispatch=self.dispatch_count,
             input_manifest_sha256=payload_digest({"chapter": number, "version": version,
-                                                  "role": "writer", "inputs": bindings}),
+                                                  "role": "writer", "inputs": bindings,
+                                                  **({"boundary_advice": advice} if advice else {})}),
+            boundary_repetition_advice=advice or {},
         )
         self.tasks.append(task)
         return task
@@ -360,6 +363,35 @@ def next_dispatches(run: ProductionRun) -> list[ProductionTask]:
     return selected
 
 
+class ControlLockBusy(ValueError):
+    """Bounded observation of a competing owner, never authority to remove it."""
+    def __init__(self, path, workspace):
+        self.owner = {"state": "unknown", "action": "unknown", "operation_id": "unknown"}
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(workspace.root.resolve()):
+                raise ValueError("锁路径归属未知")
+            with path.open("rb") as stream:
+                data = stream.read(4097)
+            if len(data) > 4096:
+                raise ValueError("锁元数据超限")
+            raw = json.loads(data)
+            pid = raw.get("pid")
+            if type(pid) is not int or pid < 1 or raw.get("workspace") != str(workspace.root.resolve()):
+                raise ValueError("锁身份无效")
+            identity = raw.get("process_identity")
+            observed = _process_identity(pid)
+            state = "active" if identity and identity == observed else "unknown"
+            self.owner.update(state=state, pid=pid, created_at=str(raw.get("created_at", "unknown"))[:80])
+            if path.read_bytes() != data:
+                self.owner["state"] = "changed_during_observation"
+        except FileNotFoundError:
+            self.owner["state"] = "disappeared_during_observation"
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+            self.owner["state"] = "invalid_or_unknown"
+        super().__init__("CONTROL_LOCK_BUSY: 同工作区控制查询/写入互斥；" + json.dumps(self.owner, ensure_ascii=False)
+                         + "；等待原命令实际终态后再查询，未知身份不得按死锁接管；不自动等待/重试/删除")
+
+
 class _ControlLockOwner:
     """Only this lock's two metadata files; content/lease publication never enters here."""
     def __init__(self, workspace: Workspace):
@@ -427,7 +459,7 @@ class _ControlLockOwner:
         try:
             os.link(self.prepared, self.path)
         except FileExistsError as error:
-            raise ValueError("已有控制面写入，先查终态；确认死进程后production-recover-lock") from error
+            raise ControlLockBusy(self.path, Workspace.open(self.root)) from error
         self.published = True
         _v_after_write(self.path)
 
@@ -792,7 +824,8 @@ def create_production_run(workspace: Workspace, policy: ProductionPolicy,
         if not diagnostic_only and number == 1:
             continue  # Approved sample is an input, never an automatic rewrite task.
         context = build_task_context(workspace, number, "writer")
-        run.add_writer(number, context["live_bindings"])
+        from knowledge_product_workflow.developmental import boundary_repetition_context
+        run.add_writer(number, context["live_bindings"], advice=boundary_repetition_context(workspace, number))
     with production_lock(workspace):
         for path in (workspace.root / "runs/production").glob("*/run.json"):
             existing = ProductionRun.model_validate_json(path.read_text(encoding="utf-8"))
@@ -885,4 +918,5 @@ def refresh_production_dependencies(workspace: Workspace, run: ProductionRun) ->
             continue
         if number not in existing:
             context = build_task_context(workspace, number, "writer")
-            run.add_writer(number, context["live_bindings"])
+            from knowledge_product_workflow.developmental import boundary_repetition_context
+            run.add_writer(number, context["live_bindings"], advice=boundary_repetition_context(workspace, number))
