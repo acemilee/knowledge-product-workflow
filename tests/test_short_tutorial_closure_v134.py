@@ -1,6 +1,8 @@
 """稀疏只是定位线索；有限闭合与长代码续页在实际PDF验证。"""
+
 from pathlib import Path
 
+import pytest
 from pypdf import PdfReader
 
 from knowledge_product_workflow.detail_constraints import DetailConstraints
@@ -24,6 +26,7 @@ def test_possible_orphan_closure_requires_specific_review_without_fill_quota():
     assert not _closure_findings(pages), '不能用固定填充率裁决所有留白'
 
 
+@pytest.mark.requires_pdf_tools
 def test_long_code_uses_legal_continuation_marker_and_keeps_payload(tmp_path):
     workspace = Workspace.create(tmp_path, 'code-continuation')
     create_product_brief(workspace, '长代码续页', DetailConstraints(delivery_format='pdf'),

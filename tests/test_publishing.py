@@ -8,7 +8,7 @@ from knowledge_product_workflow.publishing import (
     delivery_manifest_issues,
     workspace_relative_path,
 )
-from knowledge_product_workflow.workflows.validation import run_validation
+from knowledge_product_workflow.workflows.validation import run_delivery_validation
 from knowledge_product_workflow.workspace import Workspace
 
 
@@ -18,7 +18,7 @@ def test_manifest_records_sha256_for_markdown_and_pdf(tmp_path: Path) -> None:
     pdf_path = workspace.root / "delivery" / "book.pdf"
     markdown_path.write_text("# Book\n", encoding="utf-8")
     pdf_path.write_bytes(b"%PDF-test")
-    run_validation(workspace)
+    run_delivery_validation(workspace)
 
     manifest_path = create_delivery_manifest(workspace, markdown_path, pdf_path)
 
@@ -51,7 +51,7 @@ def test_manifest_refuses_a_blocking_quality_report(tmp_path: Path) -> None:
     pdf_path = workspace.root / "delivery" / "book.pdf"
     markdown_path.write_text("# Book\n\n{{TODO}}\n", encoding="utf-8")
     pdf_path.write_bytes(b"%PDF-test")
-    run_validation(workspace)
+    run_delivery_validation(workspace)
 
     with pytest.raises(ValueError, match="质量报告未通过"):
         create_delivery_manifest(workspace, markdown_path, pdf_path)

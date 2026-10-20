@@ -43,6 +43,7 @@ def test_command_discovery_includes_required_argv_choices_and_role():
     assert entry["input_templates"][0]["command"] == "content-plan-template"
 
 
+@pytest.mark.requires_poppler
 def test_pdf_observation_discovery_is_readonly_and_never_prefills_passed(tmp_path):
     from knowledge_product_workflow.visual_audit import audit_pdf_visual
     from tests.test_visual_audit import _workspace

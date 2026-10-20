@@ -37,4 +37,4 @@ jobs:
         run: uv run python .github/scripts/check_ruff_baseline.py
 
       - name: Run tests
-        run: uv run pytest -q
+        run: uv run pytest -q -ra

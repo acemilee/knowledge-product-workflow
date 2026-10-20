@@ -1,4 +1,6 @@
 """受控实际PDF探针：原代码不变，短引入与引用对象保持邻接。"""
+
+import pytest
 from pypdf import PdfReader
 
 from knowledge_product_workflow.detail_constraints import DetailConstraints
@@ -19,6 +21,7 @@ def test_interior_thin_chapter_tail_is_located_without_fill_quota():
     assert all(item.severity.value == "warning" for item in findings)
 
 
+@pytest.mark.requires_pdf_tools
 def test_actual_quote_introduction_and_object_stay_on_same_page(tmp_path):
     workspace = Workspace.create(tmp_path, "quote-closure")
     create_product_brief(workspace, "练习对象邻接", DetailConstraints(delivery_format="pdf"),
@@ -43,6 +46,7 @@ def test_actual_quote_introduction_and_object_stay_on_same_page(tmp_path):
     assert all(quote in qmd.read_text(encoding="utf-8") for _, quote in markers)
 
 
+@pytest.mark.requires_pdf_tools
 def test_actual_long_code_never_leaves_a_single_line_continuation(tmp_path):
     workspace = Workspace.create(tmp_path, "code-edges")
     create_product_brief(workspace, "代码尾上下文", DetailConstraints(delivery_format="pdf"),

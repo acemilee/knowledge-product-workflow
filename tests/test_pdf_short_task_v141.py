@@ -1,4 +1,6 @@
 """真实出版探针：有限短教学任务保持完整，长解释仍可分页。"""
+
+import pytest
 from pypdf import PdfReader
 
 from knowledge_product_workflow.detail_constraints import DetailConstraints
@@ -8,6 +10,7 @@ from knowledge_product_workflow.workflows.product_brief import create_product_br
 from knowledge_product_workflow.workspace import Workspace
 
 
+@pytest.mark.requires_pdf_tools
 def test_real_short_label_and_final_task_are_not_split(tmp_path):
     w=Workspace.create(tmp_path,'short-task-probe')
     create_product_brief(w,'短教学块分页测试',DetailConstraints(delivery_format='pdf'),

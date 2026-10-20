@@ -327,6 +327,7 @@ def test_approval_metadata_does_not_change_new_policy_visual_cache(tmp_path, mon
     assert style_binding(w, semantic=semantic) == first
 
 
+@pytest.mark.requires_svg_tools
 def test_policy_two_vector_assets_render_and_bind_to_the_same_frozen_source(tmp_path):
     import yaml
 

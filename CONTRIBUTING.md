@@ -21,6 +21,8 @@ uv lock --check
 
 PDF 与 D2 图表属于可选的本机集成依赖。若改动涉及 PDF、Quarto、XeLaTeX、D2 或浏览器转换链路，请运行 `uv run kp doctor` 并在 PR 中说明验证边界。
 
+原生测试分别标记为 `requires_poppler`、`requires_pdf_tools`、`requires_svg_tools`、`requires_d2`。依赖或合法字体缺失会明确跳过并说明未执行；不是原生通过。`uv run pytest -q -ra`显示全部跳过原因；准备好工具与授权字体后，同一命令会实际执行这些断言。synthetic导出替身不得宣称真实字体或真实产品批准。
+
 全局Ruff目前有19项固定历史问题。CI执行上述基线检查脚本，严格要求零新增，按文件、规则、消息和原语句保留重复计数；不会自动接纳新基线。直接运行Ruff仍显示历史问题，不代表全局零问题。
 
 ## 提交要求

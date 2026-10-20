@@ -92,7 +92,12 @@ def test_cli_warnings_pass_hard_changes_fail_and_current_report_reuses(tmp_path)
     events = (workspace.root / "runs/events.jsonl").read_bytes()
     assert CliRunner().invoke(app, args).exit_code == 0
     assert report_path.read_bytes() == report_bytes
-    assert (workspace.root / "runs/events.jsonl").read_bytes() == events
+    after_events = (workspace.root / "runs/events.jsonl").read_bytes()
+    # The CLI may record control routing; reuse must not repeat the actual edit proof.
+    prior = [json.loads(line) for line in events.splitlines()]
+    current = [json.loads(line) for line in after_events.splitlines()]
+    assert current[:len(prior)] == prior
+    assert all(item['event_type'] == 'orchestration_controlled_update' for item in current[len(prior):])
     source.write_text(source.read_text(encoding="utf-8").replace("timeout=8", "timeout=80"), encoding="utf-8")
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 1 and "阻断项=1" in result.output

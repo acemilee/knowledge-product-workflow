@@ -1,9 +1,12 @@
 """对受控最终PDF测列间字形；默认布局和真实代码单元共同验证。"""
+
 import json
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import pytest
 
 from knowledge_product_workflow.detail_constraints import DetailConstraints
 from knowledge_product_workflow.presentation import PresentationOverrides
@@ -43,6 +46,7 @@ def native_table_fixture(tmp_path, extra=''):
     return pdf, ET.fromstring(xml)
 
 
+@pytest.mark.requires_pdf_tools
 def test_native_visible_column_gutters_and_payload(tmp_path):
     pdf, tree = native_table_fixture(tmp_path)
     words = {node.text: node.attrib for node in tree.iter() if node.tag.endswith('word')}

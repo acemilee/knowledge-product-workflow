@@ -93,6 +93,7 @@ def _checkpoint(w, source, mapping):
     assert result.exit_code == 0, result.output
 
 
+@pytest.mark.requires_pdf_tools
 def test_failed_figure_releases_body_lease_and_next_chapter_can_be_written(tmp_path):
     w, source, mapping = _fixture(tmp_path)
     old_lease = json.loads((w.root / "runs/orchestration/leases/chapter-01.json").read_text(encoding="utf-8"))["lease_id"]
@@ -175,6 +176,7 @@ def test_complete_review_preview_still_refuses_a_missing_later_chapter(tmp_path)
 
 
 @pytest.mark.parametrize("changed_body", [False, True])
+@pytest.mark.requires_d2
 def test_repaired_asset_submission_preserves_only_unchanged_sample_approval(tmp_path, changed_body):
     """真实矢量资产＋模拟风格观察，只验证恢复闭环，不声称AI风格验收。"""
     from knowledge_product_workflow.diagrams import submit_diagram

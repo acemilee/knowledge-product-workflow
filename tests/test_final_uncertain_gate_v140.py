@@ -166,8 +166,11 @@ def test_publish_rechecks_unknown_and_keeps_existing_manifest(tmp_path):
     workspace, chapter, _ = _book(tmp_path)
     markdown = assemble_book(workspace)
     before = chapter.read_bytes()
-    # A caller-written optimistic QA envelope cannot replace the final recomputation.
-    write_quality_report(workspace, 'delivery', [])
+    # Final QA must detect uncertain; publish consumes that exact immutable report.
+    from knowledge_product_workflow.workflows.validation import run_delivery_validation
+    _, report = run_delivery_validation(workspace)
+    assert not report.publishable
+    assert any('uncertain' in f.message and f.severity.value == 'blocker' for f in report.findings)
     manifest = workspace.root / 'delivery/delivery-manifest.yaml'
     manifest.write_text('previous delivery sentinel', encoding='utf8')
     with pytest.raises(ValueError, match='质量报告未通过'):

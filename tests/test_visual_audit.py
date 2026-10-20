@@ -46,6 +46,7 @@ def _workspace(tmp_path: Path, *, body_size: int = 12) -> Workspace:
     return workspace
 
 
+@pytest.mark.requires_poppler
 def test_current_short_tutorial_covers_all_thirteen_clear_pages(tmp_path):
     from pypdf import PdfReader
     workspace = _workspace(tmp_path)
@@ -64,6 +65,7 @@ def test_current_short_tutorial_covers_all_thirteen_clear_pages(tmp_path):
     assert all(page.high_resolution_dpi >= 144 and page.high_resolution_image for page in report.pages)
 
 
+@pytest.mark.requires_poppler
 def test_v6_audit_must_precede_human_review_and_is_invalidated_by_pdf_change(tmp_path: Path, monkeypatch) -> None:
     workspace = _workspace(tmp_path)
     with pytest.raises(ValueError, match="audit-pdf-visual"):
@@ -183,6 +185,7 @@ def test_font_switch_origin_alias_is_not_body_role_evidence():
     assert "PDF_BODY_ROLE_SIZE_DRIFT" not in {x.code for x in _page_findings(metric)}
 
 
+@pytest.mark.requires_poppler
 def test_measurement_refresh_reuses_only_identical_visual_input_and_keeps_failure(tmp_path):
     from knowledge_product_workflow.visual_audit import VisualObservation, audit_path
     workspace = _workspace(tmp_path)

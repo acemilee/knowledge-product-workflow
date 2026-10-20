@@ -13,7 +13,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+
+import pytest
 
 
 def _force_utf8_stdio() -> None:
@@ -29,3 +32,34 @@ def _force_utf8_stdio() -> None:
 _force_utf8_stdio()
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
+@pytest.fixture(autouse=True)
+def native_test_prerequisites(request):
+    """原生检查缺真实前提即明确未执行；不替产品改字体或伪造工具。"""
+    if request.node.get_closest_marker('requires_poppler'):
+        from knowledge_product_workflow.pdf_preview import resolve_pdftoppm
+        if resolve_pdftoppm() is None:
+            pytest.skip('缺实际Poppler；原生页面检查未执行，不代表通过')
+    if request.node.get_closest_marker('requires_pdf_tools'):
+        missing = [tool for tool in ('quarto', 'xelatex') if shutil.which(tool) is None]
+        if missing:
+            pytest.skip('原生出版前提缺失：' + ', '.join(missing))
+        from knowledge_product_workflow.pdf_fonts import probe_preferred_fonts
+        fonts = probe_preferred_fonts(request.getfixturevalue('tmp_path'))
+        if not all(item['available'] for item in fonts.values()):
+            pytest.skip('缺默认授权字体或字体探针不可用；原生排版未执行，不代表通过')
+    if request.node.get_closest_marker('requires_d2'):
+        from knowledge_product_workflow.d2 import resolve_d2
+        if not resolve_d2().available:
+            pytest.skip('缺实际D2；原生矢量检查未执行，不代表通过')
+    if request.node.get_closest_marker('requires_svg_tools'):
+        from knowledge_product_workflow.d2 import diagram_font_css, resolve_diagram_browser
+        if not resolve_diagram_browser().available:
+            pytest.skip('缺实际浏览器导出器；原生SVG检查未执行')
+        if shutil.which('fc-match') is None:
+            pytest.skip('缺实际fontconfig；原生SVG字体检查未执行')
+        try:
+            diagram_font_css()
+        except (OSError, ValueError):
+            pytest.skip('缺首选矢量字体；原生SVG检查未执行，不代表通过')

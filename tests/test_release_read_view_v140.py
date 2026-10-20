@@ -62,7 +62,8 @@ def test_standalone_release_rejects_input_changed_after_it_was_checked(tmp_path,
 
     def mutate_at_delivery_boundary(path):
         nonlocal changed
-        if path == workspace.root / "delivery/book.md" and not changed:
+        # The Brief must already have been read before injecting an external change.
+        if path == workspace.root / "chapters/chapter-01.md" and not changed:
             brief.write_bytes(brief.read_bytes() + b"\nchanged after validation\n")
             changed = True
         return original(path)

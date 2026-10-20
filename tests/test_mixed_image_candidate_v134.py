@@ -69,6 +69,8 @@ def _mixed_workspace(tmp_path, *, caption="隐藏的处理阶段"):
 
 
 def _mock_export(monkeypatch):
+    monkeypatch.setattr("knowledge_product_workflow.d2.diagram_font_css",
+                        lambda: "/* synthetic exporter font fixture; not native font qualification */")
     browser = Path(__file__)  # Existing file identity, not a claimed real browser.
     monkeypatch.setattr("knowledge_product_workflow.d2.resolve_diagram_browser",
                         lambda: SimpleNamespace(available=True, path=browser, version="synthetic-exporter"))
@@ -439,6 +441,7 @@ def test_mixed_font_and_capacity_preflight_fail_before_any_reservation_or_render
     assert load_image_budget(workspace).slots == [] and calls == []
 
 
+@pytest.mark.requires_svg_tools
 def test_native_synthetic_material_exports_real_paired_assets_and_remains_pending(tmp_path):
     import xml.etree.ElementTree as ET
 

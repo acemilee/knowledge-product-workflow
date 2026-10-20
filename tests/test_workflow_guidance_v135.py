@@ -211,6 +211,7 @@ def _visual_template(workspace):
     return json.loads(result.output)
 
 
+@pytest.mark.requires_poppler
 def test_visual_template_preserves_valid_observations_and_only_lists_missing_input(tmp_path):
     from pypdf import PdfReader, PdfWriter
 
@@ -248,6 +249,7 @@ def test_visual_template_preserves_valid_observations_and_only_lists_missing_inp
     assert _visual_template(workspace)["full_coverage_ready"] is True
 
 
+@pytest.mark.requires_poppler
 def test_visual_template_all_current_has_no_submission_and_empty_record_is_rejected(tmp_path):
     from knowledge_product_workflow.visual_audit import (
         VisualObservation,
@@ -268,6 +270,7 @@ def test_visual_template_all_current_has_no_submission_and_empty_record_is_rejec
     assert before == {p:p.read_bytes() for p in workspace.root.rglob("*") if p.is_file()}
 
 
+@pytest.mark.requires_poppler
 def test_visual_template_keeps_failed_uncertain_and_cached_audit_reports_real_counts(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 

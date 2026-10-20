@@ -99,6 +99,9 @@ def parse_brief_semantics(body: str) -> BriefSemanticFields:
 
     outcomes = re.findall(r"^- (.+)$", section("(?:学习成果|Learning outcomes)"), re.MULTILINE)
     positioning = section("(?:产品定位|Product positioning)")
+    # Legacy Briefs may omit this later-added section; explicit blank input is still invalid.
+    if not re.search(r"^## (?:产品定位|Product positioning)\s*$", body, re.MULTILINE):
+        positioning = None
     if positioning in {"面向中文用户、可审计且可交付的专业知识教程。",
                        "An auditable, deliverable professional knowledge tutorial for English-speaking readers."}:
         positioning = None

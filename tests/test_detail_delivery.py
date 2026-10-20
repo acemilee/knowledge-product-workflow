@@ -15,7 +15,6 @@ from knowledge_product_workflow.publishing import (
     create_delivery_manifest,
     create_quarto_source,
 )
-from knowledge_product_workflow.quality import QualityReport
 from knowledge_product_workflow.workflows.product_brief import create_product_brief
 from knowledge_product_workflow.workflows.validation import (
     run_delivery_validation,
@@ -93,10 +92,6 @@ def test_pdf_page_shortfall_blocks_manifest(tmp_path: Path) -> None:
     writer.add_blank_page(595, 842)
     with pdf_path.open("wb") as handle:
         writer.write(handle)
-    (workspace.root / "delivery" / "qa-report.json").write_text(
-        QualityReport().model_dump_json(), encoding="utf-8"
-    )
-
     report_path, report = run_delivery_validation(workspace)
 
     assert report_path.exists()
@@ -279,9 +274,8 @@ def test_manifest_records_rendering_source_hashes(tmp_path: Path) -> None:
     writer.add_outline_item("目录", 0)
     with pdf_path.open("wb") as handle:
         writer.write(handle)
-    (workspace.root / "delivery" / "qa-report.json").write_text(
-        QualityReport().model_dump_json(), encoding="utf-8"
-    )
+    _, report = run_delivery_validation(workspace)
+    assert report.publishable, report.findings
 
     manifest_path = create_delivery_manifest(workspace, markdown_path, pdf_path)
 

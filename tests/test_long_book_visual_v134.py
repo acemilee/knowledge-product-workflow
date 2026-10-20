@@ -78,6 +78,7 @@ def test_mandatory_pages_survive_early_code_pages_and_overflow():
     assert overflow == sorted(set(overflow)) and all(1 <= n <= 100 for n in overflow)
 
 
+@pytest.mark.requires_poppler
 def test_32_page_expansion_only_renders_missing_pages_and_full_cache_is_readonly(tmp_path, monkeypatch):
     import knowledge_product_workflow.visual_audit as module
     workspace = long_workspace(tmp_path)
@@ -100,6 +101,7 @@ def test_32_page_expansion_only_renders_missing_pages_and_full_cache_is_readonly
 
 
 @pytest.mark.parametrize("mutation", ["missing-rule", "missing-cover", "missing-image", "dpi"])
+@pytest.mark.requires_poppler
 def test_stale_selection_or_clear_image_cannot_be_current(tmp_path, mutation):
     workspace = _workspace(tmp_path)
     report = audit_pdf_visual(workspace)
@@ -119,6 +121,7 @@ def test_stale_selection_or_clear_image_cannot_be_current(tmp_path, mutation):
     assert current_visual_audit(workspace) is None
 
 
+@pytest.mark.requires_poppler
 def test_selection_rule_refresh_reuses_actual_same_page_failure(tmp_path, monkeypatch):
     import knowledge_product_workflow.visual_audit as module
     workspace = _workspace(tmp_path)
@@ -134,6 +137,7 @@ def test_selection_rule_refresh_reuses_actual_same_page_failure(tmp_path, monkey
     assert refreshed.observations[0].assessment == "failed"
 
 
+@pytest.mark.requires_poppler
 def test_sampling_cannot_be_final_book_acceptance_without_real_manual_coverage(tmp_path):
     workspace = long_workspace(tmp_path)
     report = audit_pdf_visual(workspace)
@@ -166,6 +170,7 @@ def test_cli_defaults_to_full_pages_and_exposes_optional_initial_sample(tmp_path
 
 
 @pytest.mark.parametrize("damage", ["missing", "tampered", "truncated", "bad-pixels"])
+@pytest.mark.requires_poppler
 def test_declared_png_is_verified_even_without_rasterizer(tmp_path, monkeypatch, damage):
     import knowledge_product_workflow.visual_audit as module
     workspace = _workspace(tmp_path)
@@ -184,6 +189,7 @@ def test_declared_png_is_verified_even_without_rasterizer(tmp_path, monkeypatch,
     assert current_visual_audit(workspace) is None
 
 
+@pytest.mark.requires_poppler
 def test_timeout_preserves_partial_report_and_only_missing_pages_are_retried(tmp_path, monkeypatch):
     import subprocess
 
@@ -228,6 +234,7 @@ def test_png_late_filter_is_checked_before_first_pixel_row(tmp_path, second_filt
     assert _clear_image_valid(workspace, metric) is wanted
 
 
+@pytest.mark.requires_poppler
 def test_reused_same_blank_png_retains_known_blocker_on_rule_refresh(tmp_path, monkeypatch):
     import knowledge_product_workflow.visual_audit as module
     workspace = _workspace(tmp_path)
